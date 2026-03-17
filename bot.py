@@ -475,6 +475,22 @@ async def reload_command(interaction: discord.Interaction):
     await interaction.response.send_message("設定を再読み込みしました", ephemeral=True)
 
 
+@tree.command(name="test_welcome", description="参加ウェルカムのテスト（自分を新規参加者として送信）")
+async def test_welcome_command(interaction: discord.Interaction):
+    if not JOIN_WELCOME_ENABLED or JOIN_WELCOME_CHANNEL_ID is None:
+        await interaction.response.send_message(
+            "参加ウェルカムが無効です。config.json の welcome_on_join を確認してください",
+            ephemeral=True
+        )
+        return
+
+    await interaction.response.send_message(
+        f"テスト送信中… → <#{JOIN_WELCOME_CHANNEL_ID}>",
+        ephemeral=True
+    )
+    await handle_member_join(interaction.user)
+
+
 # ============================================================
 # BOT起動
 # ============================================================
