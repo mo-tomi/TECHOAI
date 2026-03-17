@@ -2,12 +2,13 @@
 てちょうAI - 手帳持ちの集い 統合サポートBOT
 =============================================
 機能:
-  1. AI自動返信 — 指定チャンネルの投稿に60秒後にDeepSeek AIが返信
+  1. AI自動返信 — 指定チャンネルの投稿に3〜30分後にDeepSeek AIが返信
   2. /ai スラッシュコマンド — 直接AIに話しかける
-  3. ウェルカム案内 — 自己紹介チャンネルへの投稿を検知→やさしくチャンネル案内
-  4. 今日の話題 — 毎日定時に話題を投稿してスレッド作成
-  5. 共感リアクション — 感情キーワード検知→絵文字リアクション
-  6. キープアライブ — Koyeb用の自己pingでスリープ防止
+  3. ウェルカム案内 — サーバー参加時にあいさつチャンネルへ歓迎メッセージ送信
+  4. 自己紹介リプライ — 自己紹介チャンネルへの投稿を検知→やさしくチャンネル案内
+  5. 今日の話題 — 毎日定時に話題を投稿してスレッド作成
+  6. 共感リアクション — 感情キーワード検知→絵文字リアクション
+  7. キープアライブ — Koyeb用の自己pingでスリープ防止
 
 環境変数:
   DISCORD_TOKEN    — Discord BOTトークン
@@ -108,7 +109,7 @@ async def generate_reply(message_content: str, history: list = None) -> str:
 
 
 # ============================================================
-# 機能1: AI自動返信（既存機能）
+# 機能1: AI自動返信（3〜30分ランダム遅延）
 # ============================================================
 WATCH_CHANNEL_IDS = [
     1300764527109079071,
@@ -118,7 +119,9 @@ pending_tasks: dict[int, asyncio.Task] = {}
 
 
 async def delayed_reply(msg: discord.Message):
-    await asyncio.sleep(60)
+    delay = random.randint(180, 1800)  # 3分〜30分
+    print(f"  自動返信予約: #{msg.channel.name} - {delay}秒後に返信予定")
+    await asyncio.sleep(delay)
     try:
         history = []
         async for m in msg.channel.history(limit=6, before=msg):
@@ -152,7 +155,42 @@ async def ai_command(interaction: discord.Interaction, message: str):
 
 
 # ============================================================
-# 機能3: ウェルカム案内
+# 機能3: サーバー参加時ウェルカム（on_member_join）
+# ============================================================
+join_cfg = config.get("welcome_on_join", {})
+JOIN_WELCOME_ENABLED = join_cfg.get("enabled", False)
+JOIN_WELCOME_CHANNEL_ID = join_cfg.get("channel_id")
+JOIN_WELCOME_MESSAGES = join_cfg.get("messages", [
+    "やあ、{username}。ピザ持ってきたよね？ 🍕\n冗談だよ！ゆっくりしていってね。",
+])
+
+
+async def handle_member_join(member: discord.Member):
+    """サーバー参加時にあいさつチャンネルへ歓迎メッセージを送る"""
+    if not JOIN_WELCOME_ENABLED or JOIN_WELCOME_CHANNEL_ID is None:
+        return
+
+    # 3〜15秒のランダム遅延（即レス感を消す）
+    await asyncio.sleep(random.uniform(3, 15))
+
+    try:
+        channel = client.get_channel(JOIN_WELCOME_CHANNEL_ID)
+        if channel is None:
+            print(f"  参加ウェルカム: チャンネル {JOIN_WELCOME_CHANNEL_ID} が見つかりません")
+            return
+
+        template = random.choice(JOIN_WELCOME_MESSAGES)
+        welcome_text = template.replace("{username}", member.display_name)
+        welcome_text = welcome_text.replace("{mention}", member.mention)
+
+        await channel.send(welcome_text)
+        print(f"  参加ウェルカム送信: {member.display_name}")
+    except Exception as e:
+        print(f"参加ウェルカムエラー: {e}")
+
+
+# ============================================================
+# 機能4: 自己紹介リプライ（既存のウェルカム案内）
 # ============================================================
 welcome_cfg = config.get("welcome", {})
 WELCOME_ENABLED = welcome_cfg.get("enabled", False)
@@ -184,7 +222,7 @@ async def handle_welcome(msg: discord.Message):
 
 
 # ============================================================
-# 機能4: 今日の話題
+# 機能5: 今日の話題
 # ============================================================
 topic_cfg = config.get("daily_topic", {})
 TOPIC_ENABLED = topic_cfg.get("enabled", False)
@@ -256,7 +294,7 @@ async def daily_topic_loop():
 
 
 # ============================================================
-# 機能5: 共感リアクション
+# 機能6: 共感リアクション
 # ============================================================
 empathy_cfg = config.get("empathy_reaction", {})
 EMPATHY_ENABLED = empathy_cfg.get("enabled", False)
@@ -313,7 +351,7 @@ async def handle_empathy_reaction(msg: discord.Message):
 
 
 # ============================================================
-# 機能6: キープアライブ（Koyebスリープ防止）
+# 機能7: キープアライブ（Koyebスリープ防止）
 # ============================================================
 async def keepalive_loop():
     """5分ごとに自分自身にHTTPリクエストを送ってスリープ防止"""
@@ -341,8 +379,9 @@ async def on_ready():
     print(f"Bot起動: {client.user}")
     print(f"サーバー: {GUILD_ID}")
     print("─" * 40)
-    print(f"  AI自動返信: {len(WATCH_CHANNEL_IDS)}チャンネル監視中")
-    print(f"  ウェルカム: {'ON' if WELCOME_ENABLED and WELCOME_CHANNEL_ID else 'OFF'}")
+    print(f"  AI自動返信: {len(WATCH_CHANNEL_IDS)}チャンネル監視中（3〜30分遅延）")
+    print(f"  参加ウェルカム: {'ON' if JOIN_WELCOME_ENABLED and JOIN_WELCOME_CHANNEL_ID else 'OFF'}")
+    print(f"  自己紹介リプライ: {'ON' if WELCOME_ENABLED and WELCOME_CHANNEL_ID else 'OFF'}")
     print(f"  今日の話題: {'ON' if TOPIC_ENABLED and TOPIC_CHANNEL_ID else 'OFF'}")
     print(f"  共感リアクション: {'ON' if EMPATHY_ENABLED else 'OFF'}")
     print(f"  キープアライブ: {'ON' if KOYEB_URL else 'OFF'}")
@@ -359,6 +398,12 @@ async def on_ready():
 
 
 @client.event
+async def on_member_join(member: discord.Member):
+    """サーバーに新メンバーが参加したときに発火"""
+    await handle_member_join(member)
+
+
+@client.event
 async def on_message(msg: discord.Message):
     if msg.author.bot:
         return
@@ -369,7 +414,7 @@ async def on_message(msg: discord.Message):
             pending_tasks[msg.channel.id].cancel()
         pending_tasks[msg.channel.id] = asyncio.ensure_future(delayed_reply(msg))
 
-    # ウェルカム案内
+    # 自己紹介リプライ
     await handle_welcome(msg)
 
     # 共感リアクション
@@ -414,8 +459,9 @@ async def status_command(interaction: discord.Interaction):
 
     embed = discord.Embed(title="📒 てちょうAI ステータス", color=0x5865F2)
     embed.add_field(name="現在時刻", value=uptime, inline=False)
-    embed.add_field(name="AI自動返信", value=f"{len(WATCH_CHANNEL_IDS)}ch監視中", inline=True)
-    embed.add_field(name="ウェルカム", value="ON" if WELCOME_ENABLED and WELCOME_CHANNEL_ID else "OFF", inline=True)
+    embed.add_field(name="AI自動返信", value=f"{len(WATCH_CHANNEL_IDS)}ch監視中（3〜30分遅延）", inline=True)
+    embed.add_field(name="参加ウェルカム", value="ON" if JOIN_WELCOME_ENABLED and JOIN_WELCOME_CHANNEL_ID else "OFF", inline=True)
+    embed.add_field(name="自己紹介リプライ", value="ON" if WELCOME_ENABLED and WELCOME_CHANNEL_ID else "OFF", inline=True)
     embed.add_field(name="今日の話題", value="ON" if TOPIC_ENABLED and TOPIC_CHANNEL_ID else "OFF", inline=True)
     embed.add_field(name="共感リアクション", value="ON" if EMPATHY_ENABLED else "OFF", inline=True)
     embed.add_field(name="キープアライブ", value="ON" if KOYEB_URL else "OFF", inline=True)
