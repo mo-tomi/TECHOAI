@@ -12,7 +12,7 @@
   },
 
   "welcome": {
-    "enabled": true,
+    "enabled": false,
     "watch_channel_id": 1337037662326099998,
     "message": "**ようこそ、{username} さん！** 📒\n\nまずはこのチャンネルであいさつしてみてくださいね。\n無理せず、自分のペースで大丈夫です 🌱"
   },
