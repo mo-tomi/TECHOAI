@@ -98,7 +98,7 @@ async def generate_reply(message_content: str, history: list = None) -> str:
         history = []
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     messages.extend(history)
-    messages.append({"role": "user", "content": f"以下のメッセージに短く返信してください。\n\n「{message_content}」"})
+    messages.append({"role": "user", "content": message_content})
 
     response = deepseek_client.chat.completions.create(
         model="deepseek-chat",
@@ -132,7 +132,7 @@ async def delayed_reply(msg: discord.Message):
 
         print(f"  自動返信: #{msg.channel.name} - {msg.author}: {msg.content[:50]}")
         reply_text = await generate_reply(msg.content, history)
-        await msg.reply(reply_text)
+        await msg.channel.send(reply_text)
         print(f"  → 返信しました")
     except asyncio.CancelledError:
         pass
