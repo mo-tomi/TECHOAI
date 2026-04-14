@@ -19,8 +19,8 @@
 
   "daily_topic": {
     "enabled": true,
-    "channel_id": null,
-    "hour": 12,
+    "channel_id": 1300764527109079071,
+    "hour": 0,
     "minute": 0,
     "topics": [
       "☕ 今日の調子はどうですか？（一言でOK）",

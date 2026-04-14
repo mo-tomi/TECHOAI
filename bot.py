@@ -119,7 +119,9 @@ pending_tasks: dict[int, asyncio.Task] = {}
 
 
 async def delayed_reply(msg: discord.Message):
-    delay = random.randint(180, 1800)  # 3分〜30分
+    if random.random() >= 0.3:  # 70%はスキップ
+        return
+    delay = random.randint(600, 3600)  # 10分〜60分
     print(f"  自動返信予約: #{msg.channel.name} - {delay}秒後に返信予定")
     await asyncio.sleep(delay)
     try:
