@@ -395,7 +395,8 @@ async def on_ready():
     print("スラッシュコマンド登録完了")
 
     # バックグラウンドタスク開始
-    client.loop.create_task(daily_topic_loop())
+    if TOPIC_ENABLED and TOPIC_CHANNEL_ID:
+        client.loop.create_task(daily_topic_loop())
     client.loop.create_task(keepalive_loop())
 
 

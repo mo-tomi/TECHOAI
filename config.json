@@ -18,7 +18,7 @@
   },
 
   "daily_topic": {
-    "enabled": true,
+    "enabled": false,
     "channel_id": 1300764527109079071,
     "hour": 0,
     "minute": 0,
