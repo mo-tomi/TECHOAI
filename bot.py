@@ -296,6 +296,83 @@ async def daily_topic_loop():
 
 
 # ============================================================
+# 機能5.5: チャンネル表示リマインド（毎月指定日時に自動投稿）
+# ============================================================
+reminder_cfg = config.get("channel_reminder", {})
+REMINDER_ENABLED = reminder_cfg.get("enabled", False)
+REMINDER_CHANNEL_IDS = reminder_cfg.get("channel_ids", [])
+REMINDER_DAY = reminder_cfg.get("day", 1)
+REMINDER_HOUR = reminder_cfg.get("hour", 20)
+REMINDER_MINUTE = reminder_cfg.get("minute", 0)
+REMINDER_IMAGE_URL = reminder_cfg.get("image_url", "")
+REMINDER_TITLE = reminder_cfg.get("title", "📌 チャンネル表示設定のご案内")
+REMINDER_MESSAGE = reminder_cfg.get("message", "")
+
+reminder_posted_this_month = False
+
+
+def build_reminder_embed() -> discord.Embed:
+    """チャンネル表示リマインド用のEmbedを作成"""
+    embed = discord.Embed(
+        title=REMINDER_TITLE,
+        description=REMINDER_MESSAGE,
+        color=0x5865F2,
+    )
+    if REMINDER_IMAGE_URL:
+        embed.set_image(url=REMINDER_IMAGE_URL)
+    return embed
+
+
+async def send_channel_reminder(channel_ids: list = None) -> int:
+    """指定チャンネル（省略時はREMINDER_CHANNEL_IDS）にリマインドEmbedを送信し、成功数を返す"""
+    target_ids = channel_ids if channel_ids is not None else REMINDER_CHANNEL_IDS
+    success_count = 0
+
+    for channel_id in target_ids:
+        try:
+            channel = client.get_channel(channel_id)
+            if channel is None:
+                print(f"  チャンネル表示リマインド: チャンネル {channel_id} が見つかりません")
+                continue
+            embed = build_reminder_embed()
+            await channel.send(embed=embed)
+            success_count += 1
+            print(f"  チャンネル表示リマインド送信: #{channel.name}")
+        except Exception as e:
+            print(f"チャンネル表示リマインドエラー: {e}")
+
+    return success_count
+
+
+async def monthly_reminder_loop():
+    """毎分チェックして、毎月指定日時にチャンネル表示リマインドを投稿"""
+    global reminder_posted_this_month
+
+    await client.wait_until_ready()
+
+    if not REMINDER_ENABLED or not REMINDER_CHANNEL_IDS:
+        print("チャンネル表示リマインド: 無効（チャンネル未設定）")
+        return
+
+    print(f"チャンネル表示リマインド: 有効（毎月{REMINDER_DAY}日 {REMINDER_HOUR}:{REMINDER_MINUTE:02d} JST に投稿）")
+
+    while not client.is_closed():
+        now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=9)))  # JST
+
+        # 対象日を過ぎたらリセット（翌月に備える）
+        if now.day != REMINDER_DAY:
+            reminder_posted_this_month = False
+
+        # 投稿時刻チェック
+        if (now.day == REMINDER_DAY and now.hour == REMINDER_HOUR
+                and now.minute == REMINDER_MINUTE and not reminder_posted_this_month):
+            reminder_posted_this_month = True
+            await send_channel_reminder()
+
+        await asyncio.sleep(60)
+
+
+# ============================================================
 # 機能6: 共感リアクション
 # ============================================================
 empathy_cfg = config.get("empathy_reaction", {})
@@ -385,6 +462,7 @@ async def on_ready():
     print(f"  参加ウェルカム: {'ON' if JOIN_WELCOME_ENABLED and JOIN_WELCOME_CHANNEL_ID else 'OFF'}")
     print(f"  自己紹介リプライ: {'ON' if WELCOME_ENABLED and WELCOME_CHANNEL_ID else 'OFF'}")
     print(f"  今日の話題: {'ON' if TOPIC_ENABLED and TOPIC_CHANNEL_ID else 'OFF'}")
+    print(f"  チャンネル表示リマインド: {'ON' if REMINDER_ENABLED and REMINDER_CHANNEL_IDS else 'OFF'}")
     print(f"  共感リアクション: {'ON' if EMPATHY_ENABLED else 'OFF'}")
     print(f"  キープアライブ: {'ON' if KOYEB_URL else 'OFF'}")
     print("─" * 40)
@@ -397,6 +475,8 @@ async def on_ready():
     # バックグラウンドタスク開始
     if TOPIC_ENABLED and TOPIC_CHANNEL_ID:
         client.loop.create_task(daily_topic_loop())
+    if REMINDER_ENABLED and REMINDER_CHANNEL_IDS:
+        client.loop.create_task(monthly_reminder_loop())
     client.loop.create_task(keepalive_loop())
 
 
@@ -455,6 +535,30 @@ async def manual_topic(interaction: discord.Interaction):
         pass
 
 
+@tree.command(name="channel_reminder", description="チャンネル表示設定の案内を今すぐ投稿する（管理者用）")
+async def channel_reminder_command(interaction: discord.Interaction):
+    if not interaction.user.guild_permissions.manage_guild:
+        await interaction.response.send_message(
+            "このコマンドはサーバー管理権限を持つ方のみ実行できます",
+            ephemeral=True
+        )
+        return
+
+    if not REMINDER_CHANNEL_IDS:
+        await interaction.response.send_message(
+            "チャンネル表示リマインドの投稿先が設定されていません。config.json の channel_reminder を確認してください",
+            ephemeral=True
+        )
+        return
+
+    await interaction.response.defer(ephemeral=True)
+    success_count = await send_channel_reminder()
+    await interaction.followup.send(
+        f"チャンネル表示リマインドを {success_count} 件のチャンネルに投稿しました",
+        ephemeral=True
+    )
+
+
 @tree.command(name="status", description="てちょうAIのステータスを表示")
 async def status_command(interaction: discord.Interaction):
     now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=9)))
@@ -466,6 +570,7 @@ async def status_command(interaction: discord.Interaction):
     embed.add_field(name="参加ウェルカム", value="ON" if JOIN_WELCOME_ENABLED and JOIN_WELCOME_CHANNEL_ID else "OFF", inline=True)
     embed.add_field(name="自己紹介リプライ", value="ON" if WELCOME_ENABLED and WELCOME_CHANNEL_ID else "OFF", inline=True)
     embed.add_field(name="今日の話題", value="ON" if TOPIC_ENABLED and TOPIC_CHANNEL_ID else "OFF", inline=True)
+    embed.add_field(name="チャンネル表示リマインド", value="ON" if REMINDER_ENABLED and REMINDER_CHANNEL_IDS else "OFF", inline=True)
     embed.add_field(name="共感リアクション", value="ON" if EMPATHY_ENABLED else "OFF", inline=True)
     embed.add_field(name="キープアライブ", value="ON" if KOYEB_URL else "OFF", inline=True)
     await interaction.response.send_message(embed=embed, ephemeral=True)
