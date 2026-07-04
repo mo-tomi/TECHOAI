@@ -442,9 +442,10 @@ async def keepalive_loop():
 
     print(f"キープアライブ: 有効（{KOYEB_URL}）")
 
+    loop = asyncio.get_event_loop()
     while not client.is_closed():
         try:
-            urllib.request.urlopen(KOYEB_URL, timeout=10)
+            await loop.run_in_executor(None, lambda: urllib.request.urlopen(KOYEB_URL, timeout=10))
         except Exception:
             pass
         await asyncio.sleep(300)  # 5分間隔
