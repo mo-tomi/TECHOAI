@@ -460,6 +460,7 @@ selfcheck_cfg = config.get("self_check", {})
 SELFCHECK_ENABLED = selfcheck_cfg.get("enabled", False)
 LV1_ROLE_ID = selfcheck_cfg.get("lv1_role_id")
 LV2_ROLE_ID = selfcheck_cfg.get("lv2_role_id")
+LV3_ROLE_ID = selfcheck_cfg.get("lv3_role_id")
 SELFCHECK_LOG_CHANNEL_ID = selfcheck_cfg.get("log_channel_id")
 PASS_SCORE = selfcheck_cfg.get("pass_score", 8)
 AUTO_PROMOTE = selfcheck_cfg.get("auto_promote", True)
@@ -485,7 +486,7 @@ def format_question(state: QuizState) -> str:
         f"📋 マナーセルフチェック（{state.index + 1}/{len(QUESTIONS)}問目）\n"
         f"現在のスコア: {state.score}点\n\n"
         f"**Q{state.index + 1}. {q}**\n\n"
-        "下のボタンで回答してね（全体の制限時間は10分だよ）"
+        "下のボタンで回答してね"
     )
 
 
@@ -635,8 +636,15 @@ class SelfCheckPanelView(discord.ui.View):
 
         member = interaction.user
         lv2_role = interaction.guild.get_role(LV2_ROLE_ID) if LV2_ROLE_ID else None
-        if lv2_role is not None and lv2_role in member.roles:
-            await interaction.response.send_message("すでにLv2以上です🌸 セルフチェックは不要ですよ。", ephemeral=True)
+        lv3_role = interaction.guild.get_role(LV3_ROLE_ID) if LV3_ROLE_ID else None
+        already_promoted = (lv2_role is not None and lv2_role in member.roles) or (
+            lv3_role is not None and lv3_role in member.roles
+        )
+        if already_promoted:
+            await interaction.response.send_message(
+                "すでにLv2以上です🌸（Lv2ロールまたはLv3〈副管理人〉ロールをお持ちの方は対象外）セルフチェックは不要ですよ。",
+                ephemeral=True,
+            )
             return
 
         state = QuizState(member.id)
@@ -820,6 +828,15 @@ async def setup_selfcheck_command(interaction: discord.Interaction):
             "不合格でも何度でも挑戦できるので、気軽にボタンを押してみてください🌸"
         ),
         color=0x5865F2,
+    )
+    embed.add_field(
+        name="レベルについて",
+        value=(
+            "**Lv1（新規・様子見）**: VC参加・発言・読み上げbotの利用はOK。画像/ファイル添付や音楽botの操作はまだ不可\n"
+            "**Lv2（一般）**: 画像/ファイル添付、音楽bot等のコマンドも利用可能に\n"
+            "**Lv3（副管理人）**: Lv2の権限に加えて、副管理人としてサーバー運営をサポート"
+        ),
+        inline=False,
     )
     await interaction.response.send_message(embed=embed, view=SelfCheckPanelView())
 
