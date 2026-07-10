@@ -2,7 +2,7 @@
 てちょうAI - 手帳持ちの集い 統合サポートBOT
 =============================================
 機能:
-  1. AI自動返信 — 指定チャンネルの投稿に3〜30分後にDeepSeek AIが返信
+  1. AI自動返信 — 指定チャンネルの投稿に10〜60分後にDeepSeek AIが返信
   2. /ai スラッシュコマンド — 直接AIに話しかける
   3. ウェルカム案内 — サーバー参加時にあいさつチャンネルへ歓迎メッセージ送信
   4. 自己紹介リプライ — 自己紹介チャンネルへの投稿を検知→やさしくチャンネル案内
@@ -72,6 +72,9 @@ def cfg_empathy() -> dict:
 
 def cfg_self_check() -> dict:
     return config.get("self_check", {})
+
+def cfg_ai_auto_reply() -> dict:
+    return config.get("ai_auto_reply", {})
 
 # ============================================================
 # ヘルスチェックサーバー（Koyeb用 port 8000）
@@ -163,12 +166,8 @@ async def generate_reply(message_content: str, history: list = None) -> str | No
 
 
 # ============================================================
-# 機能1: AI自動返信（3〜30分ランダム遅延）
+# 機能1: AI自動返信（10〜60分ランダム遅延）
 # ============================================================
-WATCH_CHANNEL_IDS = [
-    1300764527109079071,
-]
-
 pending_tasks: dict[int, asyncio.Task] = {}
 
 
@@ -181,6 +180,8 @@ async def delayed_reply(msg: discord.Message):
     try:
         history = []
         async for m in msg.channel.history(limit=6, before=msg):
+            if not m.content:
+                continue  # Embedのみ等、本文が空のメッセージは履歴から除外
             if m.author == client.user:
                 history.insert(0, {"role": "assistant", "content": m.content})
             elif not m.author.bot:
@@ -798,7 +799,7 @@ async def on_ready():
     print(f"Bot起動: {client.user}")
     print(f"サーバー: {GUILD_ID}")
     print("─" * 40)
-    print(f"  AI自動返信: {len(WATCH_CHANNEL_IDS)}チャンネル監視中（3〜30分遅延）")
+    print(f"  AI自動返信: {len(cfg_ai_auto_reply().get('watch_channel_ids', []))}チャンネル監視中（10〜60分遅延）")
     jw = cfg_welcome_on_join()
     print(f"  参加ウェルカム: {'ON' if jw.get('enabled', False) and jw.get('channel_id') else 'OFF'}")
     w = cfg_welcome()
@@ -837,7 +838,7 @@ async def on_message(msg: discord.Message):
         return
 
     # AI自動返信
-    if msg.channel.id in WATCH_CHANNEL_IDS:
+    if msg.channel.id in cfg_ai_auto_reply().get("watch_channel_ids", []):
         if msg.channel.id in pending_tasks:
             pending_tasks[msg.channel.id].cancel()
         pending_tasks[msg.channel.id] = asyncio.ensure_future(delayed_reply(msg))
@@ -929,7 +930,7 @@ async def status_command(interaction: discord.Interaction):
 
     embed = discord.Embed(title="📒 てちょうAI ステータス", color=0x5865F2)
     embed.add_field(name="現在時刻", value=uptime, inline=False)
-    embed.add_field(name="AI自動返信", value=f"{len(WATCH_CHANNEL_IDS)}ch監視中（3〜30分遅延）", inline=True)
+    embed.add_field(name="AI自動返信", value=f"{len(cfg_ai_auto_reply().get('watch_channel_ids', []))}ch監視中（10〜60分遅延）", inline=True)
     embed.add_field(name="参加ウェルカム", value="ON" if jw.get("enabled", False) and jw.get("channel_id") else "OFF", inline=True)
     embed.add_field(name="自己紹介リプライ", value="ON" if w.get("enabled", False) and w.get("watch_channel_id") else "OFF", inline=True)
     embed.add_field(name="今日の話題", value="ON" if t.get("enabled", False) and t.get("channel_id") else "OFF", inline=True)

@@ -3,6 +3,10 @@
     "model": "deepseek-v4-flash"
   },
 
+  "ai_auto_reply": {
+    "watch_channel_ids": [1300764527109079071]
+  },
+
   "welcome_on_join": {
     "enabled": true,
     "channel_id": 1337037662326099998,
