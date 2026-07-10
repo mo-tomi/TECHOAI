@@ -87,7 +87,7 @@
     "support_keywords": ["辛い", "つらい", "しんどい", "きつい", "疲れ", "つかれ", "不安", "怖い", "こわい", "寂しい", "さみしい", "泣い", "涙", "眠れない", "苦しい", "くるしい"],
     "empathy_keywords": ["わかる", "同じ", "共感", "そうだよね", "だよね", "あるある", "わかります"],
     "crisis_keywords": ["死にたい", "消えたい"],
-    "crisis_alert_channel_id": null
+    "crisis_alert_channel_id": 1525016308285177876
   },
 
   "self_check": {
