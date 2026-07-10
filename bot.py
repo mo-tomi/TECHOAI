@@ -857,8 +857,16 @@ async def log_deleted_message(msg: discord.Message) -> bool:
     try:
         await channel.send(embed=embed, files=files)
         return True
-    except discord.HTTPException as e:
-        print(f"消えるつぶやき: ログ送信失敗 {e}")
+    except discord.HTTPException:
+        if files:
+            # 添付が大きすぎる等で送れない場合は、URLだけ記録して本文は残す
+            embed.add_field(name="添付（再アップロード失敗・URLのみ）",
+                            value="\n".join(a.url for a in msg.attachments)[:1024], inline=False)
+            try:
+                await channel.send(embed=embed)
+                return True
+            except discord.HTTPException as e:
+                print(f"消えるつぶやき: ログ送信失敗 {e}")
         return False
 
 
