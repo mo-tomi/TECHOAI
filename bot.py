@@ -20,7 +20,7 @@
 
 import discord
 from discord import app_commands
-from openai import OpenAI
+from openai import AsyncOpenAI
 import asyncio
 import os
 import json
@@ -89,25 +89,37 @@ SYSTEM_PROMPT = """あなたは「手帳持ちの集い」というDiscordサー
 ・断定や否定はせず、当たり障りのない温かい言葉を選ぶ
 ・絵文字は使わない"""
 
-deepseek_client = OpenAI(
+deepseek_client = AsyncOpenAI(
     api_key=DEEPSEEK_API_KEY,
     base_url="https://api.deepseek.com"
 )
 
 
-async def generate_reply(message_content: str, history: list = None) -> str:
+async def generate_reply(message_content: str, history: list = None) -> str | None:
+    """DeepSeek APIに問い合わせて返信文を生成する。失敗時は1回だけ2秒後にリトライし、
+    それでも失敗したら例外を投げずNoneを返す（呼び出し側は返信をスキップしてログ出力）"""
     if history is None:
         history = []
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     messages.extend(history)
     messages.append({"role": "user", "content": message_content})
 
-    response = deepseek_client.chat.completions.create(
-        model=config.get("ai", {}).get("model", "deepseek-chat"),
-        messages=messages,
-        max_tokens=200,
-    )
-    return response.choices[0].message.content
+    for attempt in range(2):
+        try:
+            response = await deepseek_client.chat.completions.create(
+                model=config.get("ai", {}).get("model", "deepseek-chat"),
+                messages=messages,
+                max_tokens=200,
+                timeout=30,
+            )
+            return response.choices[0].message.content
+        except Exception as e:
+            if attempt == 0:
+                print(f"generate_reply エラー（リトライします）: {e}")
+                await asyncio.sleep(2)
+            else:
+                print(f"generate_reply エラー（リトライ失敗）: {e}")
+                return None
 
 
 # ============================================================
@@ -136,6 +148,9 @@ async def delayed_reply(msg: discord.Message):
 
         print(f"  自動返信: #{msg.channel.name} - {msg.author}: {msg.content[:50]}")
         reply_text = await generate_reply(msg.content, history)
+        if reply_text is None:
+            print(f"  → AI応答が取得できなかったため返信をスキップしました")
+            return
         await msg.channel.send(reply_text)
         print(f"  → 返信しました")
     except asyncio.CancelledError:
@@ -151,11 +166,12 @@ async def delayed_reply(msg: discord.Message):
 @app_commands.describe(message="AIへのメッセージ")
 async def ai_command(interaction: discord.Interaction, message: str):
     await interaction.response.defer()
-    try:
-        reply_text = await generate_reply(message)
-        await interaction.followup.send(f"> {message}\n\n{reply_text}")
-    except Exception as e:
-        await interaction.followup.send(f"エラーが発生しました: {e}")
+    reply_text = await generate_reply(message)
+    if reply_text is None:
+        print(f"  /ai コマンド: AI応答が取得できなかったため返信をスキップしました（{interaction.user}）")
+        await interaction.followup.send("ごめんなさい、今AIの応答が取得できませんでした。少し時間をおいて試してください。")
+        return
+    await interaction.followup.send(f"> {message}\n\n{reply_text}")
 
 
 # ============================================================
