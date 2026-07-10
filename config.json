@@ -1,4 +1,8 @@
 {
+  "ai": {
+    "model": "deepseek-v4-flash"
+  },
+
   "welcome_on_join": {
     "enabled": true,
     "channel_id": 1337037662326099998,

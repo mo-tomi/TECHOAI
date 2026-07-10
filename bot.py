@@ -103,7 +103,7 @@ async def generate_reply(message_content: str, history: list = None) -> str:
     messages.append({"role": "user", "content": message_content})
 
     response = deepseek_client.chat.completions.create(
-        model="deepseek-chat",
+        model=config.get("ai", {}).get("model", "deepseek-chat"),
         messages=messages,
         max_tokens=200,
     )
