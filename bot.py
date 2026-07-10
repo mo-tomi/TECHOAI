@@ -50,6 +50,29 @@ def load_config():
 
 config = load_config()
 
+# 設定値は必ずこれらの関数経由で毎回 config から取得する（/reload が即座に反映されるように、
+# モジュール読み込み時に値をコピーして固定してしまわないこと）
+def cfg_ai() -> dict:
+    return config.get("ai", {})
+
+def cfg_welcome_on_join() -> dict:
+    return config.get("welcome_on_join", {})
+
+def cfg_welcome() -> dict:
+    return config.get("welcome", {})
+
+def cfg_daily_topic() -> dict:
+    return config.get("daily_topic", {})
+
+def cfg_channel_reminder() -> dict:
+    return config.get("channel_reminder", {})
+
+def cfg_empathy() -> dict:
+    return config.get("empathy_reaction", {})
+
+def cfg_self_check() -> dict:
+    return config.get("self_check", {})
+
 # ============================================================
 # ヘルスチェックサーバー（Koyeb用 port 8000）
 # ============================================================
@@ -107,7 +130,7 @@ async def generate_reply(message_content: str, history: list = None) -> str | No
     for attempt in range(2):
         try:
             response = await deepseek_client.chat.completions.create(
-                model=config.get("ai", {}).get("model", "deepseek-chat"),
+                model=cfg_ai().get("model", "deepseek-chat"),
                 messages=messages,
                 max_tokens=200,
                 timeout=30,
@@ -177,29 +200,27 @@ async def ai_command(interaction: discord.Interaction, message: str):
 # ============================================================
 # 機能3: サーバー参加時ウェルカム（on_member_join）
 # ============================================================
-join_cfg = config.get("welcome_on_join", {})
-JOIN_WELCOME_ENABLED = join_cfg.get("enabled", False)
-JOIN_WELCOME_CHANNEL_ID = join_cfg.get("channel_id")
-JOIN_WELCOME_MESSAGES = join_cfg.get("messages", [
-    "やあ、{username}。ピザ持ってきたよね？ 🍕\n冗談だよ！ゆっくりしていってね。",
-])
-
-
 async def handle_member_join(member: discord.Member):
     """サーバー参加時にあいさつチャンネルへ歓迎メッセージを送る"""
-    if not JOIN_WELCOME_ENABLED or JOIN_WELCOME_CHANNEL_ID is None:
+    cfg = cfg_welcome_on_join()
+    enabled = cfg.get("enabled", False)
+    channel_id = cfg.get("channel_id")
+    if not enabled or channel_id is None:
         return
 
     # 3〜15秒のランダム遅延（即レス感を消す）
     await asyncio.sleep(random.uniform(3, 15))
 
     try:
-        channel = client.get_channel(JOIN_WELCOME_CHANNEL_ID)
+        channel = client.get_channel(channel_id)
         if channel is None:
-            print(f"  参加ウェルカム: チャンネル {JOIN_WELCOME_CHANNEL_ID} が見つかりません")
+            print(f"  参加ウェルカム: チャンネル {channel_id} が見つかりません")
             return
 
-        template = random.choice(JOIN_WELCOME_MESSAGES)
+        messages = cfg.get("messages", [
+            "やあ、{username}。ピザ持ってきたよね？ 🍕\n冗談だよ！ゆっくりしていってね。",
+        ])
+        template = random.choice(messages)
         welcome_text = template.replace("{username}", member.display_name)
         welcome_text = welcome_text.replace("{mention}", member.mention)
 
@@ -212,29 +233,24 @@ async def handle_member_join(member: discord.Member):
 # ============================================================
 # 機能4: 自己紹介リプライ（既存のウェルカム案内）
 # ============================================================
-welcome_cfg = config.get("welcome", {})
-WELCOME_ENABLED = welcome_cfg.get("enabled", False)
-WELCOME_CHANNEL_ID = welcome_cfg.get("watch_channel_id")
-WELCOME_MSG_TEMPLATE = welcome_cfg.get("message", "ようこそ！")
-WELCOME_CHAT_CH = welcome_cfg.get("chat_channel_id")
-WELCOME_WORRY_CH = welcome_cfg.get("worry_channel_id")
-WELCOME_VC_CH = welcome_cfg.get("vc_channel_id")
-
-
 async def handle_welcome(msg: discord.Message):
     """自己紹介チャンネルへの投稿を検知して案内メッセージを送る"""
-    if not WELCOME_ENABLED or WELCOME_CHANNEL_ID is None:
+    cfg = cfg_welcome()
+    enabled = cfg.get("enabled", False)
+    channel_id = cfg.get("watch_channel_id")
+    if not enabled or channel_id is None:
         return
-    if msg.channel.id != WELCOME_CHANNEL_ID:
+    if msg.channel.id != channel_id:
         return
 
     await asyncio.sleep(random.uniform(3, 8))
 
     try:
-        welcome_text = WELCOME_MSG_TEMPLATE.replace("{username}", msg.author.display_name)
-        welcome_text = welcome_text.replace("{chat_channel}", str(WELCOME_CHAT_CH or "雑談"))
-        welcome_text = welcome_text.replace("{worry_channel}", str(WELCOME_WORRY_CH or "悩み相談"))
-        welcome_text = welcome_text.replace("{vc_channel}", str(WELCOME_VC_CH or "VC"))
+        template = cfg.get("message", "ようこそ！")
+        welcome_text = template.replace("{username}", msg.author.display_name)
+        welcome_text = welcome_text.replace("{chat_channel}", str(cfg.get("chat_channel_id") or "雑談"))
+        welcome_text = welcome_text.replace("{worry_channel}", str(cfg.get("worry_channel_id") or "悩み相談"))
+        welcome_text = welcome_text.replace("{vc_channel}", str(cfg.get("vc_channel_id") or "VC"))
         await msg.reply(welcome_text, mention_author=False)
         print(f"  ウェルカム送信: {msg.author.display_name}")
     except Exception as e:
@@ -244,13 +260,6 @@ async def handle_welcome(msg: discord.Message):
 # ============================================================
 # 機能5: 今日の話題
 # ============================================================
-topic_cfg = config.get("daily_topic", {})
-TOPIC_ENABLED = topic_cfg.get("enabled", False)
-TOPIC_CHANNEL_ID = topic_cfg.get("channel_id")
-TOPIC_HOUR = topic_cfg.get("hour", 12)
-TOPIC_MINUTE = topic_cfg.get("minute", 0)
-TOPICS = topic_cfg.get("topics", [])
-
 topic_posted_today = False
 used_topic_indices = []
 
@@ -260,55 +269,57 @@ async def daily_topic_loop():
     global topic_posted_today, used_topic_indices
 
     await client.wait_until_ready()
-
-    if not TOPIC_ENABLED or TOPIC_CHANNEL_ID is None:
-        print("今日の話題: 無効（チャンネル未設定）")
-        return
-
-    print(f"今日の話題: 有効（毎日 {TOPIC_HOUR}:{TOPIC_MINUTE:02d} JST に投稿）")
+    print("今日の話題: 監視ループ開始")
 
     while not client.is_closed():
-        now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=9)))  # JST
+        cfg = cfg_daily_topic()
+        enabled = cfg.get("enabled", False)
+        channel_id = cfg.get("channel_id")
+        hour = cfg.get("hour", 12)
+        minute = cfg.get("minute", 0)
+        topics = cfg.get("topics", [])
 
-        # 日付が変わったらリセット
-        if now.hour == 0 and now.minute == 0:
-            topic_posted_today = False
+        if enabled and channel_id is not None:
+            now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=9)))  # JST
 
-        # 投稿時刻チェック
-        if (now.hour == TOPIC_HOUR and now.minute == TOPIC_MINUTE
-                and not topic_posted_today and TOPICS):
-            topic_posted_today = True
+            # 日付が変わったらリセット
+            if now.hour == 0 and now.minute == 0:
+                topic_posted_today = False
 
-            # トピック選択（全部使い切ったらリセット）
-            available = [i for i in range(len(TOPICS)) if i not in used_topic_indices]
-            if not available:
-                used_topic_indices.clear()
-                available = list(range(len(TOPICS)))
+            # 投稿時刻チェック
+            if now.hour == hour and now.minute == minute and not topic_posted_today and topics:
+                topic_posted_today = True
 
-            idx = random.choice(available)
-            used_topic_indices.append(idx)
-            topic = TOPICS[idx]
+                # トピック選択（全部使い切ったらリセット）
+                available = [i for i in range(len(topics)) if i not in used_topic_indices]
+                if not available:
+                    used_topic_indices.clear()
+                    available = list(range(len(topics)))
 
-            try:
-                channel = client.get_channel(TOPIC_CHANNEL_ID)
-                if channel:
-                    today_str = now.strftime("%m/%d")
+                idx = random.choice(available)
+                used_topic_indices.append(idx)
+                topic = topics[idx]
 
-                    embed = discord.Embed(
-                        title="📒 今日の話題",
-                        description=topic,
-                        color=0x5865F2,
-                    )
-                    embed.set_footer(text="答えなくても読むだけでもOKです 🌱")
+                try:
+                    channel = client.get_channel(channel_id)
+                    if channel:
+                        today_str = now.strftime("%m/%d")
 
-                    sent_msg = await channel.send(embed=embed)
-                    await sent_msg.create_thread(
-                        name=f"今日の話題 - {today_str}",
-                        auto_archive_duration=1440
-                    )
-                    print(f"  今日の話題投稿: {topic[:30]}")
-            except Exception as e:
-                print(f"今日の話題エラー: {e}")
+                        embed = discord.Embed(
+                            title="📒 今日の話題",
+                            description=topic,
+                            color=0x5865F2,
+                        )
+                        embed.set_footer(text="答えなくても読むだけでもOKです 🌱")
+
+                        sent_msg = await channel.send(embed=embed)
+                        await sent_msg.create_thread(
+                            name=f"今日の話題 - {today_str}",
+                            auto_archive_duration=1440
+                        )
+                        print(f"  今日の話題投稿: {topic[:30]}")
+                except Exception as e:
+                    print(f"今日の話題エラー: {e}")
 
         await asyncio.sleep(60)
 
@@ -316,34 +327,26 @@ async def daily_topic_loop():
 # ============================================================
 # 機能5.5: チャンネル表示リマインド（毎月指定日時に自動投稿）
 # ============================================================
-reminder_cfg = config.get("channel_reminder", {})
-REMINDER_ENABLED = reminder_cfg.get("enabled", False)
-REMINDER_CHANNEL_IDS = reminder_cfg.get("channel_ids", [])
-REMINDER_DAY = reminder_cfg.get("day", 1)
-REMINDER_HOUR = reminder_cfg.get("hour", 20)
-REMINDER_MINUTE = reminder_cfg.get("minute", 0)
-REMINDER_IMAGE_URL = reminder_cfg.get("image_url", "")
-REMINDER_TITLE = reminder_cfg.get("title", "📌 チャンネル表示設定のご案内")
-REMINDER_MESSAGE = reminder_cfg.get("message", "")
-
 reminder_posted_this_month = False
 
 
 def build_reminder_embed() -> discord.Embed:
     """チャンネル表示リマインド用のEmbedを作成"""
+    cfg = cfg_channel_reminder()
     embed = discord.Embed(
-        title=REMINDER_TITLE,
-        description=REMINDER_MESSAGE,
+        title=cfg.get("title", "📌 チャンネル表示設定のご案内"),
+        description=cfg.get("message", ""),
         color=0x5865F2,
     )
-    if REMINDER_IMAGE_URL:
-        embed.set_image(url=REMINDER_IMAGE_URL)
+    image_url = cfg.get("image_url", "")
+    if image_url:
+        embed.set_image(url=image_url)
     return embed
 
 
 async def send_channel_reminder(channel_ids: list = None) -> int:
-    """指定チャンネル（省略時はREMINDER_CHANNEL_IDS）にリマインドEmbedを送信し、成功数を返す"""
-    target_ids = channel_ids if channel_ids is not None else REMINDER_CHANNEL_IDS
+    """指定チャンネル（省略時はconfigのchannel_ids）にリマインドEmbedを送信し、成功数を返す"""
+    target_ids = channel_ids if channel_ids is not None else cfg_channel_reminder().get("channel_ids", [])
     success_count = 0
 
     for channel_id in target_ids:
@@ -367,25 +370,27 @@ async def monthly_reminder_loop():
     global reminder_posted_this_month
 
     await client.wait_until_ready()
-
-    if not REMINDER_ENABLED or not REMINDER_CHANNEL_IDS:
-        print("チャンネル表示リマインド: 無効（チャンネル未設定）")
-        return
-
-    print(f"チャンネル表示リマインド: 有効（毎月{REMINDER_DAY}日 {REMINDER_HOUR}:{REMINDER_MINUTE:02d} JST に投稿）")
+    print("チャンネル表示リマインド: 監視ループ開始")
 
     while not client.is_closed():
-        now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=9)))  # JST
+        cfg = cfg_channel_reminder()
+        enabled = cfg.get("enabled", False)
+        channel_ids = cfg.get("channel_ids", [])
+        day = cfg.get("day", 1)
+        hour = cfg.get("hour", 20)
+        minute = cfg.get("minute", 0)
 
-        # 対象日を過ぎたらリセット（翌月に備える）
-        if now.day != REMINDER_DAY:
-            reminder_posted_this_month = False
+        if enabled and channel_ids:
+            now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=9)))  # JST
 
-        # 投稿時刻チェック
-        if (now.day == REMINDER_DAY and now.hour == REMINDER_HOUR
-                and now.minute == REMINDER_MINUTE and not reminder_posted_this_month):
-            reminder_posted_this_month = True
-            await send_channel_reminder()
+            # 対象日を過ぎたらリセット（翌月に備える）
+            if now.day != day:
+                reminder_posted_this_month = False
+
+            # 投稿時刻チェック
+            if now.day == day and now.hour == hour and now.minute == minute and not reminder_posted_this_month:
+                reminder_posted_this_month = True
+                await send_channel_reminder(channel_ids)
 
         await asyncio.sleep(60)
 
@@ -393,54 +398,52 @@ async def monthly_reminder_loop():
 # ============================================================
 # 機能6: 共感リアクション
 # ============================================================
-empathy_cfg = config.get("empathy_reaction", {})
-EMPATHY_ENABLED = empathy_cfg.get("enabled", False)
-EMPATHY_CHANNEL_IDS = empathy_cfg.get("watch_channel_ids", [])
-REACTIONS = empathy_cfg.get("reactions", {})
-POSITIVE_KW = empathy_cfg.get("positive_keywords", [])
-SUPPORT_KW = empathy_cfg.get("support_keywords", [])
-EMPATHY_KW = empathy_cfg.get("empathy_keywords", [])
-
-
 async def handle_empathy_reaction(msg: discord.Message):
     """メッセージ内のキーワードを検知してリアクションを付ける"""
-    if not EMPATHY_ENABLED:
+    cfg = cfg_empathy()
+    if not cfg.get("enabled", False):
         return
 
+    watch_channel_ids = cfg.get("watch_channel_ids", [])
     # watch_channel_ids が空なら全チャンネル対象
-    if EMPATHY_CHANNEL_IDS and msg.channel.id not in EMPATHY_CHANNEL_IDS:
+    if watch_channel_ids and msg.channel.id not in watch_channel_ids:
         return
 
     content = msg.content
     if len(content) < 5:
         return
 
+    reactions = cfg.get("reactions", {})
+    positive_kw = cfg.get("positive_keywords", [])
+    support_kw = cfg.get("support_keywords", [])
+    empathy_kw = cfg.get("empathy_keywords", [])
+
     matched_category = None
 
     # つらい・しんどいメッセージ（最優先）
-    for kw in SUPPORT_KW:
+    for kw in support_kw:
         if kw in content:
             matched_category = "support"
             break
 
     # ポジティブなメッセージ
     if not matched_category:
-        for kw in POSITIVE_KW:
+        for kw in positive_kw:
             if kw in content:
                 matched_category = "positive"
                 break
 
     # 共感系メッセージ
     if not matched_category:
-        for kw in EMPATHY_KW:
+        for kw in empathy_kw:
             if kw in content:
                 matched_category = "empathy"
                 break
 
-    if matched_category and matched_category in REACTIONS:
+    if matched_category and matched_category in reactions:
         await asyncio.sleep(random.uniform(5, 30))
         try:
-            emoji = random.choice(REACTIONS[matched_category])
+            emoji = random.choice(reactions[matched_category])
             await msg.add_reaction(emoji)
             print(f"  共感リアクション: {matched_category} → {emoji} ({msg.content[:30]})")
         except Exception:
@@ -472,18 +475,7 @@ async def keepalive_loop():
 # ============================================================
 # 機能8: マナーセルフチェック（Lv1→Lv2昇格）
 # ============================================================
-selfcheck_cfg = config.get("self_check", {})
-SELFCHECK_ENABLED = selfcheck_cfg.get("enabled", False)
-LV1_ROLE_ID = selfcheck_cfg.get("lv1_role_id")
-LV2_ROLE_ID = selfcheck_cfg.get("lv2_role_id")
-LV3_ROLE_ID = selfcheck_cfg.get("lv3_role_id")
-SELFCHECK_LOG_CHANNEL_ID = selfcheck_cfg.get("log_channel_id")
-PASS_SCORE = selfcheck_cfg.get("pass_score", 8)
-AUTO_PROMOTE = selfcheck_cfg.get("auto_promote", True)
-QUESTIONS = selfcheck_cfg.get("questions", [])
-
 QUIZ_TIMEOUT_SECONDS = 600  # セルフチェック全体の制限時間（10分）
-SELFCHECK_COOLDOWN_DAYS = selfcheck_cfg.get("cooldown_days", 30)  # 前回挑戦から何日経てば再挑戦できるか
 SELFCHECK_STATE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "selfcheck_state.json")
 
 
@@ -513,27 +505,32 @@ def get_selfcheck_cooldown_remaining(user_id: int):
         return None
     last_dt = datetime.datetime.fromisoformat(last)
     elapsed = datetime.datetime.now(datetime.timezone.utc) - last_dt
-    cooldown = datetime.timedelta(days=SELFCHECK_COOLDOWN_DAYS)
+    cooldown_days = cfg_self_check().get("cooldown_days", 30)
+    cooldown = datetime.timedelta(days=cooldown_days)
     if elapsed >= cooldown:
         return None
     return cooldown - elapsed
 
 
 class QuizState:
-    """1人分のセルフチェックの進行状況（合否判定まで使い捨て）"""
+    """1人分のセルフチェックの進行状況（合否判定まで使い捨て）。
+    設問と合格ラインは開始時点のconfigをスナップショットして持ち、
+    挑戦の途中で/reloadされても質問がすり替わらないようにする"""
 
-    def __init__(self, user_id: int):
+    def __init__(self, user_id: int, questions: list, pass_score: int):
         self.user_id = user_id
         self.index = 0
         self.score = 0
         self.start_time = time.monotonic()
         self.message = None  # discord.Message、タイムアウト時の編集用
+        self.questions = questions
+        self.pass_score = pass_score
 
 
 def format_question(state: QuizState) -> str:
-    q = QUESTIONS[state.index]
+    q = state.questions[state.index]
     return (
-        f"📋 マナーセルフチェック（{state.index + 1}/{len(QUESTIONS)}問目）\n"
+        f"📋 マナーセルフチェック（{state.index + 1}/{len(state.questions)}問目）\n"
         f"現在のスコア: {state.score}点\n\n"
         f"**Q{state.index + 1}. {q}**\n\n"
         "下のボタンで回答してね"
@@ -543,7 +540,7 @@ def format_question(state: QuizState) -> str:
 def format_selfcheck_result(state: QuizState, passed: bool, promote_note: str) -> str:
     lines = [
         "🎉 セルフチェック合格です！おめでとう！" if passed else "😢 今回は合格ラインに届きませんでした。",
-        f"スコア: {state.score} / {len(QUESTIONS)}点（合格ライン: {PASS_SCORE}点）",
+        f"スコア: {state.score} / {len(state.questions)}点（合格ライン: {state.pass_score}点）",
     ]
     if passed:
         if promote_note:
@@ -554,11 +551,12 @@ def format_selfcheck_result(state: QuizState, passed: bool, promote_note: str) -
 
 
 async def send_selfcheck_log(interaction: discord.Interaction, state: QuizState, passed: bool, promote_note: str):
-    if SELFCHECK_LOG_CHANNEL_ID is None:
+    log_channel_id = cfg_self_check().get("log_channel_id")
+    if log_channel_id is None:
         return
-    channel = client.get_channel(SELFCHECK_LOG_CHANNEL_ID)
+    channel = client.get_channel(log_channel_id)
     if channel is None:
-        print(f"  セルフチェック: ログチャンネル {SELFCHECK_LOG_CHANNEL_ID} が見つかりません")
+        print(f"  セルフチェック: ログチャンネル {log_channel_id} が見つかりません")
         return
     embed = discord.Embed(
         title="✅ セルフチェック合格" if passed else "❌ セルフチェック不合格",
@@ -566,25 +564,30 @@ async def send_selfcheck_log(interaction: discord.Interaction, state: QuizState,
         timestamp=datetime.datetime.now(datetime.timezone.utc),
     )
     embed.add_field(name="対象者", value=f"{interaction.user.mention}（{interaction.user}）", inline=False)
-    embed.add_field(name="スコア", value=f"{state.score} / {len(QUESTIONS)}点（合格ライン {PASS_SCORE}点）", inline=False)
+    embed.add_field(name="スコア", value=f"{state.score} / {len(state.questions)}点（合格ライン {state.pass_score}点）", inline=False)
     if promote_note:
         embed.add_field(name="ロール処理", value=promote_note, inline=False)
     embed.set_footer(text=f"ユーザーID: {interaction.user.id}")
     try:
         await channel.send(embed=embed)
     except discord.Forbidden:
-        print(f"  セルフチェック: ログチャンネル {SELFCHECK_LOG_CHANNEL_ID} への送信権限がありません")
+        print(f"  セルフチェック: ログチャンネル {log_channel_id} への送信権限がありません")
 
 
 async def finish_selfcheck(interaction: discord.Interaction, state: QuizState):
-    passed = state.score >= PASS_SCORE
+    cfg = cfg_self_check()
+    auto_promote = cfg.get("auto_promote", True)
+    lv1_role_id = cfg.get("lv1_role_id")
+    lv2_role_id = cfg.get("lv2_role_id")
+
+    passed = state.score >= state.pass_score
     promote_note = ""
 
-    if passed and AUTO_PROMOTE:
+    if passed and auto_promote:
         guild = interaction.guild
         member = interaction.user
-        lv2_role = guild.get_role(LV2_ROLE_ID) if LV2_ROLE_ID else None
-        lv1_role = guild.get_role(LV1_ROLE_ID) if LV1_ROLE_ID else None
+        lv2_role = guild.get_role(lv2_role_id) if lv2_role_id else None
+        lv1_role = guild.get_role(lv1_role_id) if lv1_role_id else None
 
         if lv2_role is None:
             promote_note = "⚠️ self_check.lv2_role_id の設定が正しくないため、ロールを付与できませんでした。手動付与をお願いします。"
@@ -625,7 +628,7 @@ async def finish_selfcheck(interaction: discord.Interaction, state: QuizState):
 
 
 async def advance_selfcheck(interaction: discord.Interaction, state: QuizState):
-    if state.index < len(QUESTIONS):
+    if state.index < len(state.questions):
         view = SelfCheckAnswerView(state)
         await interaction.response.edit_message(content=format_question(state), view=view)
         state.message = await interaction.original_response()
@@ -680,21 +683,28 @@ class SelfCheckPanelView(discord.ui.View):
         if interaction.guild is None or not isinstance(interaction.user, discord.Member):
             await interaction.response.send_message("このボタンはサーバー内でのみ使えます。", ephemeral=True)
             return
-        if not QUESTIONS:
+
+        cfg = cfg_self_check()
+        questions = cfg.get("questions", [])
+        pass_score = cfg.get("pass_score", 8)
+        lv2_role_id = cfg.get("lv2_role_id")
+        lv3_role_id = cfg.get("lv3_role_id")
+
+        if not questions:
             await interaction.response.send_message(
                 "設問が未設定です。config.json の self_check.questions を確認してください。", ephemeral=True
             )
             return
 
         member = interaction.user
-        lv2_role = interaction.guild.get_role(LV2_ROLE_ID) if LV2_ROLE_ID else None
-        lv3_role = interaction.guild.get_role(LV3_ROLE_ID) if LV3_ROLE_ID else None
+        lv2_role = interaction.guild.get_role(lv2_role_id) if lv2_role_id else None
+        lv3_role = interaction.guild.get_role(lv3_role_id) if lv3_role_id else None
         already_promoted = (lv2_role is not None and lv2_role in member.roles) or (
             lv3_role is not None and lv3_role in member.roles
         )
         if already_promoted:
             await interaction.response.send_message(
-                "すでにLv2以上です🌸（Lv2またはLv3ロールをお持ちの方は対象外）セルフチェックは不要ですよ。",
+                "すでにLv2以上です🌸(Lv2またはLv3ロールをお持ちの方は対象外)セルフチェックは不要ですよ。",
                 ephemeral=True,
             )
             return
@@ -705,12 +715,12 @@ class SelfCheckPanelView(discord.ui.View):
             jst = datetime.timezone(datetime.timedelta(hours=9))
             next_str = next_dt.astimezone(jst).strftime("%Y/%m/%d")
             await interaction.response.send_message(
-                f"セルフチェックは月1回までです。次に挑戦できるのは {next_str}（JST）以降だよ🌸",
+                f"セルフチェックは月1回までです。次に挑戦できるのは {next_str}(JST)以降だよ🌸",
                 ephemeral=True,
             )
             return
 
-        state = QuizState(member.id)
+        state = QuizState(member.id, questions, pass_score)
         view = SelfCheckAnswerView(state)
         await interaction.response.send_message(content=format_question(state), view=view, ephemeral=True)
         state.message = await interaction.original_response()
@@ -730,12 +740,16 @@ async def on_ready():
     print(f"サーバー: {GUILD_ID}")
     print("─" * 40)
     print(f"  AI自動返信: {len(WATCH_CHANNEL_IDS)}チャンネル監視中（3〜30分遅延）")
-    print(f"  参加ウェルカム: {'ON' if JOIN_WELCOME_ENABLED and JOIN_WELCOME_CHANNEL_ID else 'OFF'}")
-    print(f"  自己紹介リプライ: {'ON' if WELCOME_ENABLED and WELCOME_CHANNEL_ID else 'OFF'}")
-    print(f"  今日の話題: {'ON' if TOPIC_ENABLED and TOPIC_CHANNEL_ID else 'OFF'}")
-    print(f"  チャンネル表示リマインド: {'ON' if REMINDER_ENABLED and REMINDER_CHANNEL_IDS else 'OFF'}")
-    print(f"  共感リアクション: {'ON' if EMPATHY_ENABLED else 'OFF'}")
-    print(f"  マナーセルフチェック: {'ON' if SELFCHECK_ENABLED else 'OFF'}")
+    jw = cfg_welcome_on_join()
+    print(f"  参加ウェルカム: {'ON' if jw.get('enabled', False) and jw.get('channel_id') else 'OFF'}")
+    w = cfg_welcome()
+    print(f"  自己紹介リプライ: {'ON' if w.get('enabled', False) and w.get('watch_channel_id') else 'OFF'}")
+    t = cfg_daily_topic()
+    print(f"  今日の話題: {'ON' if t.get('enabled', False) and t.get('channel_id') else 'OFF'}")
+    r = cfg_channel_reminder()
+    print(f"  チャンネル表示リマインド: {'ON' if r.get('enabled', False) and r.get('channel_ids') else 'OFF'}")
+    print(f"  共感リアクション: {'ON' if cfg_empathy().get('enabled', False) else 'OFF'}")
+    print(f"  マナーセルフチェック: {'ON' if cfg_self_check().get('enabled', False) else 'OFF'}")
     print(f"  キープアライブ: {'ON' if KOYEB_URL else 'OFF'}")
     print("─" * 40)
 
@@ -745,10 +759,10 @@ async def on_ready():
     print("スラッシュコマンド登録完了")
 
     # バックグラウンドタスク開始
-    if TOPIC_ENABLED and TOPIC_CHANNEL_ID:
-        client.loop.create_task(daily_topic_loop())
-    if REMINDER_ENABLED and REMINDER_CHANNEL_IDS:
-        client.loop.create_task(monthly_reminder_loop())
+    # 各ループは内部で毎回configを見に行くため、/reload で後から有効化された場合にも
+    # 再起動なしで反映される。そのため起動時のON/OFFにかかわらず常に起動しておく
+    client.loop.create_task(daily_topic_loop())
+    client.loop.create_task(monthly_reminder_loop())
     client.loop.create_task(keepalive_loop())
 
 
@@ -781,11 +795,12 @@ async def on_message(msg: discord.Message):
 # ============================================================
 @tree.command(name="topic", description="今日の話題を手動で投稿する")
 async def manual_topic(interaction: discord.Interaction):
-    if not TOPICS:
+    topics = cfg_daily_topic().get("topics", [])
+    if not topics:
         await interaction.response.send_message("話題リストが空です", ephemeral=True)
         return
 
-    topic = random.choice(TOPICS)
+    topic = random.choice(topics)
     now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=9)))
     today_str = now.strftime("%m/%d")
 
@@ -816,7 +831,8 @@ async def channel_reminder_command(interaction: discord.Interaction):
         )
         return
 
-    if not REMINDER_CHANNEL_IDS:
+    channel_ids = cfg_channel_reminder().get("channel_ids", [])
+    if not channel_ids:
         await interaction.response.send_message(
             "チャンネル表示リマインドの投稿先が設定されていません。config.json の channel_reminder を確認してください",
             ephemeral=True
@@ -824,7 +840,7 @@ async def channel_reminder_command(interaction: discord.Interaction):
         return
 
     await interaction.response.defer(ephemeral=True)
-    success_count = await send_channel_reminder()
+    success_count = await send_channel_reminder(channel_ids)
     await interaction.followup.send(
         f"チャンネル表示リマインドを {success_count} 件のチャンネルに投稿しました",
         ephemeral=True
@@ -836,15 +852,20 @@ async def status_command(interaction: discord.Interaction):
     now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=9)))
     uptime = now.strftime("%Y/%m/%d %H:%M JST")
 
+    jw = cfg_welcome_on_join()
+    w = cfg_welcome()
+    t = cfg_daily_topic()
+    r = cfg_channel_reminder()
+
     embed = discord.Embed(title="📒 てちょうAI ステータス", color=0x5865F2)
     embed.add_field(name="現在時刻", value=uptime, inline=False)
     embed.add_field(name="AI自動返信", value=f"{len(WATCH_CHANNEL_IDS)}ch監視中（3〜30分遅延）", inline=True)
-    embed.add_field(name="参加ウェルカム", value="ON" if JOIN_WELCOME_ENABLED and JOIN_WELCOME_CHANNEL_ID else "OFF", inline=True)
-    embed.add_field(name="自己紹介リプライ", value="ON" if WELCOME_ENABLED and WELCOME_CHANNEL_ID else "OFF", inline=True)
-    embed.add_field(name="今日の話題", value="ON" if TOPIC_ENABLED and TOPIC_CHANNEL_ID else "OFF", inline=True)
-    embed.add_field(name="チャンネル表示リマインド", value="ON" if REMINDER_ENABLED and REMINDER_CHANNEL_IDS else "OFF", inline=True)
-    embed.add_field(name="共感リアクション", value="ON" if EMPATHY_ENABLED else "OFF", inline=True)
-    embed.add_field(name="マナーセルフチェック", value="ON" if SELFCHECK_ENABLED else "OFF", inline=True)
+    embed.add_field(name="参加ウェルカム", value="ON" if jw.get("enabled", False) and jw.get("channel_id") else "OFF", inline=True)
+    embed.add_field(name="自己紹介リプライ", value="ON" if w.get("enabled", False) and w.get("watch_channel_id") else "OFF", inline=True)
+    embed.add_field(name="今日の話題", value="ON" if t.get("enabled", False) and t.get("channel_id") else "OFF", inline=True)
+    embed.add_field(name="チャンネル表示リマインド", value="ON" if r.get("enabled", False) and r.get("channel_ids") else "OFF", inline=True)
+    embed.add_field(name="共感リアクション", value="ON" if cfg_empathy().get("enabled", False) else "OFF", inline=True)
+    embed.add_field(name="マナーセルフチェック", value="ON" if cfg_self_check().get("enabled", False) else "OFF", inline=True)
     embed.add_field(name="キープアライブ", value="ON" if KOYEB_URL else "OFF", inline=True)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -858,7 +879,8 @@ async def reload_command(interaction: discord.Interaction):
 
 @tree.command(name="test_welcome", description="参加ウェルカムのテスト（自分を新規参加者として送信）")
 async def test_welcome_command(interaction: discord.Interaction):
-    if not JOIN_WELCOME_ENABLED or JOIN_WELCOME_CHANNEL_ID is None:
+    jw = cfg_welcome_on_join()
+    if not jw.get("enabled", False) or jw.get("channel_id") is None:
         await interaction.response.send_message(
             "参加ウェルカムが無効です。config.json の welcome_on_join を確認してください",
             ephemeral=True
@@ -866,7 +888,7 @@ async def test_welcome_command(interaction: discord.Interaction):
         return
 
     await interaction.response.send_message(
-        f"テスト送信中… → <#{JOIN_WELCOME_CHANNEL_ID}>",
+        f"テスト送信中… → <#{jw.get('channel_id')}>",
         ephemeral=True
     )
     await handle_member_join(interaction.user)
@@ -877,18 +899,24 @@ async def setup_selfcheck_command(interaction: discord.Interaction):
     if not interaction.user.guild_permissions.administrator:
         await interaction.response.send_message("このコマンドは管理者専用です。", ephemeral=True)
         return
-    if not SELFCHECK_ENABLED:
+
+    cfg = cfg_self_check()
+    if not cfg.get("enabled", False):
         await interaction.response.send_message(
             "セルフチェック機能が無効です。config.json の self_check.enabled を確認してください。", ephemeral=True
         )
         return
 
+    questions = cfg.get("questions", [])
+    pass_score = cfg.get("pass_score", 8)
+    cooldown_days = cfg.get("cooldown_days", 30)
+
     embed = discord.Embed(
         title="📋 マナーセルフチェック",
         description=(
-            f"Lv2への昇格には、マナーに関する全{len(QUESTIONS)}問のセルフチェックに答えてね😊\n"
-            f"{PASS_SCORE}点以上で合格すると、その場でLv2ロールが自動で付きます。\n"
-            f"不合格の場合も再挑戦できますが、次のチャレンジまで{SELFCHECK_COOLDOWN_DAYS}日空くので、"
+            f"Lv2への昇格には、マナーに関する全{len(questions)}問のセルフチェックに答えてね😊\n"
+            f"{pass_score}点以上で合格すると、その場でLv2ロールが自動で付きます。\n"
+            f"不合格の場合も再挑戦できますが、次のチャレンジまで{cooldown_days}日空くので、"
             "落ち着いてから挑戦してみてください🌸"
         ),
         color=0x5865F2,
