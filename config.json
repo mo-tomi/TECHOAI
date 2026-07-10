@@ -96,7 +96,7 @@
     "min_minutes": 1,
     "max_minutes": 60,
     "keep_pinned": true,
-    "log_channel_id": null
+    "log_channel_id": 1525162349261226145
   },
 
   "level_tracker": {
