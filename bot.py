@@ -398,6 +398,48 @@ async def monthly_reminder_loop():
 # ============================================================
 # 機能6: 共感リアクション
 # ============================================================
+async def send_crisis_alert(msg: discord.Message, matched_keyword: str):
+    """危機ワード検知の通知Embedを管理者用チャンネルへ送る（本人には何も送らない）"""
+    channel_id = cfg_empathy().get("crisis_alert_channel_id")
+    if channel_id is None:
+        print(f"  危機ワード検知: crisis_alert_channel_id が未設定のため通知をスキップ（{msg.author}: {matched_keyword}）")
+        return
+    channel = client.get_channel(channel_id)
+    if channel is None:
+        print(f"  危機ワード検知: 通知先チャンネル {channel_id} が見つかりません")
+        return
+    embed = discord.Embed(
+        title="⚠️ 危機ワード検知",
+        description=f"[メッセージへ移動する]({msg.jump_url})",
+        color=0xE74C3C,
+        timestamp=datetime.datetime.now(datetime.timezone.utc),
+    )
+    embed.add_field(name="投稿者", value=f"{msg.author.mention}（{msg.author}）", inline=False)
+    embed.add_field(name="チャンネル", value=msg.channel.mention, inline=False)
+    embed.add_field(name="検知ワード", value=matched_keyword, inline=False)
+    if msg.content:
+        embed.add_field(name="本文（抜粋）", value=msg.content[:200], inline=False)
+    embed.set_footer(text=f"ユーザーID: {msg.author.id}")
+    try:
+        await channel.send(embed=embed)
+        print(f"  危機ワード通知送信: {msg.author}（{matched_keyword}）")
+    except discord.Forbidden:
+        print(f"  危機ワード検知: 通知先チャンネル {channel_id} への送信権限がありません")
+
+
+async def handle_crisis_check(msg: discord.Message) -> bool:
+    """自傷・希死念慮を示す危機ワードを検知したら管理者用チャンネルへ通知する。
+    プレッシャーを与えないため本人への自動送信（リアクション含む）は一切行わない。
+    共感リアクションのON/OFFやwatch_channel_idsに関わらず全チャンネルで常時監視する"""
+    crisis_kw = cfg_empathy().get("crisis_keywords", [])
+    content = msg.content
+    for kw in crisis_kw:
+        if kw in content:
+            await send_crisis_alert(msg, kw)
+            return True
+    return False
+
+
 async def handle_empathy_reaction(msg: discord.Message):
     """メッセージ内のキーワードを検知してリアクションを付ける"""
     cfg = cfg_empathy()
@@ -783,11 +825,15 @@ async def on_message(msg: discord.Message):
             pending_tasks[msg.channel.id].cancel()
         pending_tasks[msg.channel.id] = asyncio.ensure_future(delayed_reply(msg))
 
+    # 危機ワード検知（最優先・全チャンネル常時監視）
+    crisis_matched = await handle_crisis_check(msg)
+
     # 自己紹介リプライ
     await handle_welcome(msg)
 
-    # 共感リアクション
-    await handle_empathy_reaction(msg)
+    # 共感リアクション（危機ワードに一致した場合は絵文字を付けない）
+    if not crisis_matched:
+        await handle_empathy_reaction(msg)
 
 
 # ============================================================
