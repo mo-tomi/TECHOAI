@@ -88,6 +88,7 @@
     "log_channel_id": 1524978165037137941,
     "pass_score": 8,
     "auto_promote": true,
+    "cooldown_days": 30,
     "questions": [
       "VCに入るとき、今の雰囲気（作業中・雑談中など）を確認してから話し始めることができる",
       "音楽やSE（効果音）を流す前に、VCにいる人へ一言確認できる",

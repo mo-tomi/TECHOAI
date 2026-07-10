@@ -467,6 +467,40 @@ AUTO_PROMOTE = selfcheck_cfg.get("auto_promote", True)
 QUESTIONS = selfcheck_cfg.get("questions", [])
 
 QUIZ_TIMEOUT_SECONDS = 600  # セルフチェック全体の制限時間（10分）
+SELFCHECK_COOLDOWN_DAYS = selfcheck_cfg.get("cooldown_days", 30)  # 前回挑戦から何日経てば再挑戦できるか
+SELFCHECK_STATE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "selfcheck_state.json")
+
+
+def load_selfcheck_state() -> dict:
+    if not os.path.exists(SELFCHECK_STATE_PATH):
+        return {}
+    try:
+        with open(SELFCHECK_STATE_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+selfcheck_state = load_selfcheck_state()  # { "ユーザーID(str)": "前回挑戦したISO日時" }
+
+
+def record_selfcheck_attempt(user_id: int):
+    selfcheck_state[str(user_id)] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    with open(SELFCHECK_STATE_PATH, "w", encoding="utf-8") as f:
+        json.dump(selfcheck_state, f, ensure_ascii=False, indent=2)
+
+
+def get_selfcheck_cooldown_remaining(user_id: int):
+    """前回挑戦からクールダウン期間が明けていなければ、残り時間(timedelta)を返す。明けていればNone"""
+    last = selfcheck_state.get(str(user_id))
+    if last is None:
+        return None
+    last_dt = datetime.datetime.fromisoformat(last)
+    elapsed = datetime.datetime.now(datetime.timezone.utc) - last_dt
+    cooldown = datetime.timedelta(days=SELFCHECK_COOLDOWN_DAYS)
+    if elapsed >= cooldown:
+        return None
+    return cooldown - elapsed
 
 
 class QuizState:
@@ -567,6 +601,8 @@ async def finish_selfcheck(interaction: discord.Interaction, state: QuizState):
     elif passed:
         promote_note = "ℹ️ self_check.auto_promote=false のため、ロール変更は行われていません（ログのみ）。"
 
+    record_selfcheck_attempt(interaction.user.id)
+
     result_text = format_selfcheck_result(state, passed, promote_note)
     await interaction.response.edit_message(content=result_text, view=None)
     await send_selfcheck_log(interaction, state, passed, promote_note)
@@ -643,6 +679,17 @@ class SelfCheckPanelView(discord.ui.View):
         if already_promoted:
             await interaction.response.send_message(
                 "すでにLv2以上です🌸（Lv2またはLv3ロールをお持ちの方は対象外）セルフチェックは不要ですよ。",
+                ephemeral=True,
+            )
+            return
+
+        remaining = get_selfcheck_cooldown_remaining(member.id)
+        if remaining is not None:
+            next_dt = datetime.datetime.now(datetime.timezone.utc) + remaining
+            jst = datetime.timezone(datetime.timedelta(hours=9))
+            next_str = next_dt.astimezone(jst).strftime("%Y/%m/%d")
+            await interaction.response.send_message(
+                f"セルフチェックは月1回までです。次に挑戦できるのは {next_str}（JST）以降だよ🌸",
                 ephemeral=True,
             )
             return
@@ -825,7 +872,8 @@ async def setup_selfcheck_command(interaction: discord.Interaction):
         description=(
             f"Lv2への昇格には、マナーに関する全{len(QUESTIONS)}問のセルフチェックに答えてね😊\n"
             f"{PASS_SCORE}点以上で合格すると、その場でLv2ロールが自動で付きます。\n"
-            "不合格でも何度でも挑戦できるので、気軽にボタンを押してみてください🌸"
+            f"不合格の場合も再挑戦できますが、次のチャレンジまで{SELFCHECK_COOLDOWN_DAYS}日空くので、"
+            "落ち着いてから挑戦してみてください🌸"
         ),
         color=0x5865F2,
     )
