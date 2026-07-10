@@ -642,7 +642,7 @@ class SelfCheckPanelView(discord.ui.View):
         )
         if already_promoted:
             await interaction.response.send_message(
-                "すでにLv2以上です🌸（Lv2ロールまたはLv3〈副管理人〉ロールをお持ちの方は対象外）セルフチェックは不要ですよ。",
+                "すでにLv2以上です🌸（Lv2またはLv3ロールをお持ちの方は対象外）セルフチェックは不要ですよ。",
                 ephemeral=True,
             )
             return
@@ -832,9 +832,14 @@ async def setup_selfcheck_command(interaction: discord.Interaction):
     embed.add_field(
         name="レベルについて",
         value=(
-            "**Lv1（新規・様子見）**: VC参加・発言・読み上げbotの利用はOK。画像/ファイル添付や音楽botの操作はまだ不可\n"
-            "**Lv2（一般）**: 画像/ファイル添付、音楽bot等のコマンドも利用可能に\n"
-            "**Lv3（副管理人）**: Lv2の権限に加えて、副管理人としてサーバー運営をサポート"
+            "**Lv1（全員）**\n"
+            "VC参加・発言・読み上げbotの利用はOK。画像/ファイル添付や音楽botの操作はまだ不可\n"
+            "\n"
+            "**Lv2（一般）**\n"
+            "画像/ファイル添付、音楽bot等のコマンドも利用可能に\n"
+            "\n"
+            "**Lv3**\n"
+            "管理人・副管理人が信頼できると判断したメンバーに手動で付与するロール（セルフチェック対象外）"
         ),
         inline=False,
     )
