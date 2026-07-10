@@ -90,6 +90,25 @@
     "crisis_alert_channel_id": 1525016308285177876
   },
 
+  "ephemeral_tweet": {
+    "enabled": true,
+    "channel_id": 1519624579239247972,
+    "min_minutes": 1,
+    "max_minutes": 60,
+    "keep_pinned": true,
+    "log_channel_id": null
+  },
+
+  "level_tracker": {
+    "enabled": true,
+    "channel_id": 1333045874699403405
+  },
+
+  "knock": {
+    "enabled": true,
+    "panel_channel_id": 1306187694027571330
+  },
+
   "self_check": {
     "enabled": true,
     "lv1_role_id": 1524977272900292778,

@@ -10,6 +10,9 @@
   6. 共感リアクション — 感情キーワード検知→絵文字リアクション
   7. キープアライブ — Koyeb用の自己pingでスリープ防止
   8. マナーセルフチェック — Lv1メンバーがマナークイズに合格するとLv2ロールを自動付与
+  9. 消えるつぶやき — 指定チャンネルの投稿を1〜60分後に自動削除し、非公開ログチャンネルへ記録
+ 10. しんどいレベル — 数字だけの投稿を記録し /graph /graph-all でグラフ表示
+ 11. 匿名ノック — 満室VCへ匿名でノックを送り、部屋側はボタンで返信
 
 環境変数:
   DISCORD_TOKEN    — Discord BOTトークン
@@ -22,14 +25,22 @@ import discord
 from discord import app_commands
 from openai import AsyncOpenAI
 import asyncio
+import io
 import os
 import json
 import random
+import re
 import datetime
 import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
 import urllib.request
+
+import matplotlib
+matplotlib.use("Agg")  # サーバー上で画面なしにPNGを描くため（pyplotのimportより先に指定）
+import matplotlib.dates as mdates
+from matplotlib import font_manager
+from matplotlib import pyplot as plt
 
 # ============================================================
 # 環境変数
@@ -75,6 +86,15 @@ def cfg_self_check() -> dict:
 
 def cfg_ai_auto_reply() -> dict:
     return config.get("ai_auto_reply", {})
+
+def cfg_ephemeral() -> dict:
+    return config.get("ephemeral_tweet", {})
+
+def cfg_level_tracker() -> dict:
+    return config.get("level_tracker", {})
+
+def cfg_knock() -> dict:
+    return config.get("knock", {})
 
 # ============================================================
 # ヘルスチェックサーバー（Koyeb用 port 8000）
@@ -787,11 +807,368 @@ class SelfCheckPanelView(discord.ui.View):
 
 
 # ============================================================
+# 機能9: 消えるつぶやき（1〜60分後に自動削除→ログチャンネルへ記録）
+# ============================================================
+def _fnv_hash_unit(text: str) -> float:
+    """メッセージIDから0〜1の固定値を作る（再起動しても同じ値になる: FNV-1aハッシュ）"""
+    h = 2166136261
+    for ch in text:
+        h ^= ord(ch)
+        h = (h * 16777619) & 0xFFFFFFFF
+    return (h % 100000) / 100000
+
+
+def ephemeral_delete_after_ms(msg: discord.Message) -> int:
+    """そのメッセージの「消えるまでの時間」をmin〜max分でランダムに決める（IDで固定）"""
+    cfg = cfg_ephemeral()
+    min_ms = cfg.get("min_minutes", 1) * 60_000
+    max_ms = cfg.get("max_minutes", 60) * 60_000
+    return min_ms + int(_fnv_hash_unit(str(msg.id)) * (max_ms - min_ms))
+
+
+async def log_deleted_message(msg: discord.Message) -> bool:
+    """削除するメッセージをログチャンネルへ記録する（添付画像も再アップロードして残す）。
+    記録できなかった場合はFalseを返し、呼び出し側は削除を見送る（記録なしで消さない）"""
+    log_channel_id = cfg_ephemeral().get("log_channel_id")
+    channel = client.get_channel(log_channel_id) if log_channel_id else None
+    if channel is None:
+        return False
+
+    embed = discord.Embed(
+        title="🗑️ 消えるつぶやき 削除ログ",
+        description=msg.content if msg.content else "（本文なし）",
+        color=0x99AAB5,
+        timestamp=datetime.datetime.now(datetime.timezone.utc),
+    )
+    embed.add_field(name="投稿者", value=f"{msg.author.mention}（{msg.author}）", inline=False)
+    embed.add_field(name="投稿日時", value=f"<t:{int(msg.created_at.timestamp())}:f>", inline=False)
+    embed.set_footer(text=f"メッセージID: {msg.id}")
+
+    files = []
+    failed_urls = []
+    for att in msg.attachments:
+        try:
+            files.append(await att.to_file())
+        except discord.HTTPException:
+            failed_urls.append(att.url)
+    if failed_urls:
+        embed.add_field(name="保存できなかった添付", value="\n".join(failed_urls)[:1024], inline=False)
+
+    try:
+        await channel.send(embed=embed, files=files)
+        return True
+    except discord.HTTPException as e:
+        print(f"消えるつぶやき: ログ送信失敗 {e}")
+        return False
+
+
+ephemeral_log_warned = False
+
+
+async def ephemeral_sweep():
+    """対象チャンネルを巡回して、期限を過ぎた投稿を記録してから削除する"""
+    cfg = cfg_ephemeral()
+    channel = client.get_channel(cfg.get("channel_id"))
+    if channel is None:
+        return
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    deleted = 0
+
+    async for msg in channel.history(limit=100):
+        if cfg.get("keep_pinned", True) and msg.pinned:
+            continue
+        age_ms = (now - msg.created_at).total_seconds() * 1000
+        if age_ms < ephemeral_delete_after_ms(msg):
+            continue
+        if not await log_deleted_message(msg):
+            continue  # 記録できないうちは消さない
+        try:
+            await msg.delete()
+            deleted += 1
+        except discord.NotFound:
+            pass  # 既に消えている
+        except discord.Forbidden:
+            print("消えるつぶやき: メッセージの管理権限がありません")
+            return
+
+    if deleted > 0:
+        print(f"消えるつぶやき: {deleted}件削除しました")
+
+
+async def ephemeral_sweep_loop():
+    """1分ごとに対象チャンネルを巡回する"""
+    global ephemeral_log_warned
+    await client.wait_until_ready()
+    print("消えるつぶやき: 巡回ループ開始")
+
+    while not client.is_closed():
+        cfg = cfg_ephemeral()
+        if cfg.get("enabled", False) and cfg.get("channel_id"):
+            if not cfg.get("log_channel_id"):
+                if not ephemeral_log_warned:
+                    print("消えるつぶやき: log_channel_id が未設定のため削除を停止しています")
+                    ephemeral_log_warned = True
+            else:
+                try:
+                    await ephemeral_sweep()
+                except Exception as e:
+                    print(f"消えるつぶやきエラー: {e}")
+        await asyncio.sleep(60)
+
+
+# ============================================================
+# 機能10: しんどいレベル記録・グラフ（/graph /graph-all）
+# ============================================================
+# 「数字のみ」の投稿だけを値として認める（範囲・複数値・文章混じりは対象外）
+LEVEL_NUM_RE = re.compile(r"^\d+(\.\d+)?$")
+LEVEL_COLORS = [
+    "#e63946", "#457b9d", "#2a9d8f", "#f4a261", "#8338ec",
+    "#ff006e", "#3a86ff", "#606c38", "#bc6c25", "#6a4c93",
+]
+
+# 日本語フォント（assets/fonts に同梱。Koyebのコンテナには日本語フォントが無いため）
+LEVEL_FONT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "fonts", "NotoSansJP.ttf")
+if os.path.exists(LEVEL_FONT_PATH):
+    font_manager.fontManager.addfont(LEVEL_FONT_PATH)
+    matplotlib.rcParams["font.family"] = "Noto Sans JP"
+
+# Koyebはディスクが再デプロイで消えるため、記録はメモリ上に持ち、
+# 起動のたびにチャンネル履歴から全件を再構築する（backfill）
+# { user_id: {"name": 表示名, "ids": 取込済みメッセージID集合, "records": [(unix_ms, 値), ...] } }
+level_users: dict[int, dict] = {}
+
+
+def level_add_record(user_id: int, name: str, message_id: int, timestamp_ms: int, value: float) -> bool:
+    """記録を1件追加する。同じメッセージIDは重複追加しない"""
+    user = level_users.setdefault(user_id, {"name": name, "ids": set(), "records": []})
+    user["name"] = name  # 最新の表示名で更新
+    if message_id in user["ids"]:
+        return False
+    user["ids"].add(message_id)
+    user["records"].append((timestamp_ms, value))
+    user["records"].sort()
+    return True
+
+
+async def level_backfill():
+    """チャンネルの過去投稿を全件読み直して記録を再構築する（起動時に毎回実行）"""
+    cfg = cfg_level_tracker()
+    if not cfg.get("enabled", False) or not cfg.get("channel_id"):
+        print("しんどいレベル: 無効")
+        return
+    channel = client.get_channel(cfg.get("channel_id"))
+    if channel is None:
+        print(f"しんどいレベル: チャンネル {cfg.get('channel_id')} が見つかりません")
+        return
+
+    total = 0
+    async for msg in channel.history(limit=None, oldest_first=True):
+        if msg.author.bot:
+            continue
+        text = (msg.content or "").strip()
+        if not LEVEL_NUM_RE.match(text):
+            continue
+        name = msg.author.display_name
+        if level_add_record(msg.author.id, name, msg.id, int(msg.created_at.timestamp() * 1000), float(text)):
+            total += 1
+    print(f"しんどいレベル: 過去投稿から{total}件を取り込みました")
+
+
+def render_level_chart(title: str, series: list) -> bytes:
+    """折れ線グラフPNGを描く。series = [(表示名, [(unix_ms, 値), ...]), ...]"""
+    jst = datetime.timezone(datetime.timedelta(hours=9))
+    fig, ax = plt.subplots(figsize=(10, 6), dpi=100)
+    for i, (label, records) in enumerate(series):
+        xs = [datetime.datetime.fromtimestamp(t / 1000, jst) for t, _ in records]
+        ys = [v for _, v in records]
+        ax.plot(xs, ys, color=LEVEL_COLORS[i % len(LEVEL_COLORS)],
+                linewidth=2, marker="o", markersize=5, label=label)
+    ax.set_title(title)
+    ax.set_ylim(0, 100)
+    ax.set_yticks(range(0, 101, 20))
+    ax.grid(axis="y", color="#dddddd")
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y/%m/%d", tz=jst))
+    if len(series) > 1:
+        ax.legend(loc="upper left", bbox_to_anchor=(1.01, 1.0))
+    fig.autofmt_xdate()
+    fig.tight_layout()
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png")
+    plt.close(fig)
+    return buf.getvalue()
+
+
+@tree.command(name="graph", description="指定したユーザーのしんどいレベルの推移をグラフで表示します")
+@app_commands.describe(user="対象ユーザー")
+async def graph_command(interaction: discord.Interaction, user: discord.User):
+    record = level_users.get(user.id)
+    if not record or not record["records"]:
+        await interaction.response.send_message(f"{user.name} さんの記録はまだありません", ephemeral=True)
+        return
+    await interaction.response.defer()
+    png = render_level_chart(
+        f"{record['name']} さんのしんどいレベル（0=いい方 / 100=悪い方）",
+        [(record["name"], record["records"])],
+    )
+    await interaction.followup.send(file=discord.File(io.BytesIO(png), "graph.png"))
+
+
+@tree.command(name="graph-all", description="全員のしんどいレベルの推移を1枚のグラフで重ねて表示します")
+async def graph_all_command(interaction: discord.Interaction):
+    series = [(u["name"], u["records"]) for u in level_users.values() if u["records"]]
+    if not series:
+        await interaction.response.send_message("記録がまだありません", ephemeral=True)
+        return
+    await interaction.response.defer()
+    png = render_level_chart("しんどいレベル（全員, 0=いい方 / 100=悪い方）", series)
+    await interaction.followup.send(file=discord.File(io.BytesIO(png), "graph-all.png"))
+
+
+# ============================================================
+# 機能11: 匿名ノック（満室VCへの入室希望をボタンで送る）
+# ============================================================
+KNOCK_PANEL_TITLE = "通話募集・入室希望"
+KNOCK_RESPONSES = {
+    "sorry": ("ごめんなさい今は難しい", discord.ButtonStyle.danger, "🙏 ごめんなさい、今は難しいです"),
+    "wait": ("ちょっと待ってね", discord.ButtonStyle.secondary, "⏳ ちょっと待ってね"),
+    "move": ("部屋移動するね", discord.ButtonStyle.success, "🔀 部屋を移動するね"),
+}
+
+knock_panel_msg_id: int | None = None
+
+
+class KnockResponseButton(
+    discord.ui.DynamicItem[discord.ui.Button],
+    template=r"knock_resp:(?P<key>sorry|wait|move):(?P<knocker>[0-9]+)",
+):
+    """ノックへの返信ボタン。ノック主のIDをcustom_idに埋め込むことで、
+    DBなし・再起動後でも誰に通知すべきかが分かる（Koyebのディスクは消えるため）"""
+
+    def __init__(self, key: str, knocker_id: int):
+        label, style, _ = KNOCK_RESPONSES[key]
+        super().__init__(discord.ui.Button(
+            label=label, style=style, custom_id=f"knock_resp:{key}:{knocker_id}",
+        ))
+        self.key = key
+        self.knocker_id = knocker_id
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item: discord.ui.Button, match: re.Match):
+        return cls(match["key"], int(match["knocker"]))
+
+    async def callback(self, interaction: discord.Interaction):
+        text = KNOCK_RESPONSES[self.key][2]
+        # 部屋チャットの表示を更新（誰が答えたか付き）してボタンを閉じる
+        embed = interaction.message.embeds[0]
+        embed.description += f"\n\n**応答:** {text}（{interaction.user.display_name}）"
+        await interaction.response.edit_message(embed=embed, view=None)
+        # ノック主にDMで通知
+        try:
+            user = client.get_user(self.knocker_id) or await client.fetch_user(self.knocker_id)
+            await user.send(f"ノックした部屋から返信がありました：\n{text}")
+        except discord.HTTPException:
+            pass  # DM拒否設定等は無視
+
+
+def build_knock_response_view(knocker_id: int) -> discord.ui.View:
+    view = discord.ui.View(timeout=None)
+    for key in KNOCK_RESPONSES:
+        view.add_item(KnockResponseButton(key, knocker_id))
+    return view
+
+
+class KnockVCSelect(discord.ui.ChannelSelect):
+    def __init__(self, knocker_id: int):
+        self.knocker_id = knocker_id
+        super().__init__(channel_types=[discord.ChannelType.voice],
+                         placeholder="ボイスチャンネルを選択", min_values=1, max_values=1)
+
+    async def callback(self, interaction: discord.Interaction):
+        ch = interaction.guild.get_channel(self.values[0].id)
+        if ch is None:
+            await interaction.response.send_message("チャンネルが見つかりませんでした", ephemeral=True)
+            return
+        embed = discord.Embed(
+            description="🚪 **どうやら入りたい人がいるようです**\nノックがありました。よければ返信してあげてください。",
+            color=0x5865F2,
+        )
+        await ch.send(embed=embed, view=build_knock_response_view(self.knocker_id))
+        await interaction.response.send_message(f"✅ {ch.mention} にノックを送りました", ephemeral=True)
+
+
+class KnockSelectView(discord.ui.View):
+    def __init__(self, knocker_id: int):
+        super().__init__(timeout=120)
+        self.add_item(KnockVCSelect(knocker_id))
+
+
+class KnockPanelView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)  # persistent view（再起動後も有効）
+
+    @discord.ui.button(label="部屋をノックする", style=discord.ButtonStyle.primary,
+                       emoji="🔔", custom_id="knock_panel_button")
+    async def knock(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message(
+            "入りたい部屋を選んでください（あなたの名前は相手に表示されません）",
+            view=KnockSelectView(interaction.user.id), ephemeral=True)
+
+
+def build_knock_panel_embed() -> discord.Embed:
+    return discord.Embed(
+        title=KNOCK_PANEL_TITLE,
+        description=("満室部屋に入りたいときは、下のボタンで匿名ノックできます。\n"
+                     "※相手がDMを拒否する設定をしている場合、返信が来ないことがあります。"),
+        color=0x5865F2,
+    )
+
+
+async def knock_repost_panel(channel):
+    """パネルを最下部に貼り直す"""
+    global knock_panel_msg_id
+    if knock_panel_msg_id:
+        try:
+            old = await channel.fetch_message(knock_panel_msg_id)
+            await old.delete()
+        except discord.HTTPException:
+            pass
+    msg = await channel.send(embed=build_knock_panel_embed(), view=KnockPanelView())
+    knock_panel_msg_id = msg.id
+
+
+async def knock_ensure_panel():
+    """起動時にパネルの有無を確認し、無ければ設置する。
+    （メッセージIDはDBに保存できないため、チャンネル履歴から自分のパネルを探す）"""
+    global knock_panel_msg_id
+    cfg = cfg_knock()
+    if not cfg.get("enabled", False) or not cfg.get("panel_channel_id"):
+        print("匿名ノック: 無効")
+        return
+    channel = client.get_channel(cfg.get("panel_channel_id"))
+    if channel is None:
+        print(f"匿名ノック: チャンネル {cfg.get('panel_channel_id')} が見つかりません")
+        return
+    async for msg in channel.history(limit=50):
+        if msg.author == client.user and msg.embeds and msg.embeds[0].title == KNOCK_PANEL_TITLE:
+            knock_panel_msg_id = msg.id
+            break
+    if knock_panel_msg_id is None:
+        await knock_repost_panel(channel)
+    print("匿名ノック: 準備完了")
+
+
+# ============================================================
 # イベントハンドラ
 # ============================================================
+background_tasks_started = False
+
+
 @client.event
 async def setup_hook():
     client.add_view(SelfCheckPanelView())  # 再起動後もセルフチェックパネルのボタンを有効化
+    client.add_view(KnockPanelView())      # 再起動後もノックパネルのボタンを有効化
+    client.add_dynamic_items(KnockResponseButton)  # 再起動前に送ったノックの返信ボタンを有効化
 
 
 @client.event
@@ -810,6 +1187,12 @@ async def on_ready():
     print(f"  チャンネル表示リマインド: {'ON' if r.get('enabled', False) and r.get('channel_ids') else 'OFF'}")
     print(f"  共感リアクション: {'ON' if cfg_empathy().get('enabled', False) else 'OFF'}")
     print(f"  マナーセルフチェック: {'ON' if cfg_self_check().get('enabled', False) else 'OFF'}")
+    e = cfg_ephemeral()
+    print(f"  消えるつぶやき: {'ON' if e.get('enabled', False) and e.get('channel_id') else 'OFF'}")
+    lv = cfg_level_tracker()
+    print(f"  しんどいレベル: {'ON' if lv.get('enabled', False) and lv.get('channel_id') else 'OFF'}")
+    k = cfg_knock()
+    print(f"  匿名ノック: {'ON' if k.get('enabled', False) and k.get('panel_channel_id') else 'OFF'}")
     print(f"  キープアライブ: {'ON' if KOYEB_URL else 'OFF'}")
     print("─" * 40)
 
@@ -821,9 +1204,15 @@ async def on_ready():
     # バックグラウンドタスク開始
     # 各ループは内部で毎回configを見に行くため、/reload で後から有効化された場合にも
     # 再起動なしで反映される。そのため起動時のON/OFFにかかわらず常に起動しておく
-    client.loop.create_task(daily_topic_loop())
-    client.loop.create_task(monthly_reminder_loop())
-    client.loop.create_task(keepalive_loop())
+    global background_tasks_started
+    if not background_tasks_started:  # on_readyは再接続時にも発火するため二重起動を防ぐ
+        background_tasks_started = True
+        client.loop.create_task(daily_topic_loop())
+        client.loop.create_task(monthly_reminder_loop())
+        client.loop.create_task(keepalive_loop())
+        client.loop.create_task(ephemeral_sweep_loop())
+        client.loop.create_task(level_backfill())
+        client.loop.create_task(knock_ensure_panel())
 
 
 @client.event
@@ -852,6 +1241,19 @@ async def on_message(msg: discord.Message):
     # 共感リアクション（危機ワードに一致した場合は絵文字を付けない）
     if not crisis_matched:
         await handle_empathy_reaction(msg)
+
+    # しんどいレベル記録（数字だけの投稿を取り込む）
+    lv_cfg = cfg_level_tracker()
+    if lv_cfg.get("enabled", False) and msg.channel.id == lv_cfg.get("channel_id"):
+        text = (msg.content or "").strip()
+        if LEVEL_NUM_RE.match(text):
+            level_add_record(msg.author.id, msg.author.display_name, msg.id,
+                             int(msg.created_at.timestamp() * 1000), float(text))
+
+    # 匿名ノック: パネルチャンネルで誰かが発言→パネルを最下部に貼り直す
+    k_cfg = cfg_knock()
+    if k_cfg.get("enabled", False) and msg.channel.id == k_cfg.get("panel_channel_id"):
+        await knock_repost_panel(msg.channel)
 
 
 # ============================================================
@@ -937,6 +1339,12 @@ async def status_command(interaction: discord.Interaction):
     embed.add_field(name="チャンネル表示リマインド", value="ON" if r.get("enabled", False) and r.get("channel_ids") else "OFF", inline=True)
     embed.add_field(name="共感リアクション", value="ON" if cfg_empathy().get("enabled", False) else "OFF", inline=True)
     embed.add_field(name="マナーセルフチェック", value="ON" if cfg_self_check().get("enabled", False) else "OFF", inline=True)
+    e = cfg_ephemeral()
+    embed.add_field(name="消えるつぶやき", value="ON" if e.get("enabled", False) and e.get("channel_id") and e.get("log_channel_id") else "OFF", inline=True)
+    lv = cfg_level_tracker()
+    embed.add_field(name="しんどいレベル", value="ON" if lv.get("enabled", False) and lv.get("channel_id") else "OFF", inline=True)
+    k = cfg_knock()
+    embed.add_field(name="匿名ノック", value="ON" if k.get("enabled", False) and k.get("panel_channel_id") else "OFF", inline=True)
     embed.add_field(name="キープアライブ", value="ON" if KOYEB_URL else "OFF", inline=True)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
