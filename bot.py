@@ -841,6 +841,13 @@ async def on_message(msg: discord.Message):
 # ============================================================
 @tree.command(name="topic", description="今日の話題を手動で投稿する")
 async def manual_topic(interaction: discord.Interaction):
+    if not interaction.user.guild_permissions.manage_guild:
+        await interaction.response.send_message(
+            "このコマンドはサーバー管理権限を持つ方のみ実行できます",
+            ephemeral=True
+        )
+        return
+
     topics = cfg_daily_topic().get("topics", [])
     if not topics:
         await interaction.response.send_message("話題リストが空です", ephemeral=True)
@@ -918,6 +925,13 @@ async def status_command(interaction: discord.Interaction):
 
 @tree.command(name="reload", description="設定ファイルを再読み込みする")
 async def reload_command(interaction: discord.Interaction):
+    if not interaction.user.guild_permissions.manage_guild:
+        await interaction.response.send_message(
+            "このコマンドはサーバー管理権限を持つ方のみ実行できます",
+            ephemeral=True
+        )
+        return
+
     global config
     config = load_config()
     await interaction.response.send_message("設定を再読み込みしました", ephemeral=True)
@@ -925,6 +939,13 @@ async def reload_command(interaction: discord.Interaction):
 
 @tree.command(name="test_welcome", description="参加ウェルカムのテスト（自分を新規参加者として送信）")
 async def test_welcome_command(interaction: discord.Interaction):
+    if not interaction.user.guild_permissions.manage_guild:
+        await interaction.response.send_message(
+            "このコマンドはサーバー管理権限を持つ方のみ実行できます",
+            ephemeral=True
+        )
+        return
+
     jw = cfg_welcome_on_join()
     if not jw.get("enabled", False) or jw.get("channel_id") is None:
         await interaction.response.send_message(
