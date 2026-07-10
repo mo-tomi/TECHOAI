@@ -9,6 +9,7 @@
   5. 今日の話題 — 毎日定時に話題を投稿してスレッド作成
   6. 共感リアクション — 感情キーワード検知→絵文字リアクション
   7. キープアライブ — Koyeb用の自己pingでスリープ防止
+  8. マナーセルフチェック — Lv1メンバーがマナークイズに合格するとLv2ロールを自動付与
 
 環境変数:
   DISCORD_TOKEN    — Discord BOTトークン
@@ -25,6 +26,7 @@ import os
 import json
 import random
 import datetime
+import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
 import urllib.request
@@ -452,8 +454,205 @@ async def keepalive_loop():
 
 
 # ============================================================
+# 機能8: マナーセルフチェック（Lv1→Lv2昇格）
+# ============================================================
+selfcheck_cfg = config.get("self_check", {})
+SELFCHECK_ENABLED = selfcheck_cfg.get("enabled", False)
+LV1_ROLE_ID = selfcheck_cfg.get("lv1_role_id")
+LV2_ROLE_ID = selfcheck_cfg.get("lv2_role_id")
+SELFCHECK_LOG_CHANNEL_ID = selfcheck_cfg.get("log_channel_id")
+PASS_SCORE = selfcheck_cfg.get("pass_score", 8)
+AUTO_PROMOTE = selfcheck_cfg.get("auto_promote", True)
+QUESTIONS = selfcheck_cfg.get("questions", [])
+
+QUIZ_TIMEOUT_SECONDS = 600  # セルフチェック全体の制限時間（10分）
+
+
+class QuizState:
+    """1人分のセルフチェックの進行状況（合否判定まで使い捨て）"""
+
+    def __init__(self, user_id: int):
+        self.user_id = user_id
+        self.index = 0
+        self.score = 0
+        self.start_time = time.monotonic()
+        self.message = None  # discord.Message、タイムアウト時の編集用
+
+
+def format_question(state: QuizState) -> str:
+    q = QUESTIONS[state.index]
+    return (
+        f"📋 マナーセルフチェック（{state.index + 1}/{len(QUESTIONS)}問目）\n"
+        f"現在のスコア: {state.score}点\n\n"
+        f"**Q{state.index + 1}. {q}**\n\n"
+        "下のボタンで回答してね（全体の制限時間は10分だよ）"
+    )
+
+
+def format_selfcheck_result(state: QuizState, passed: bool, promote_note: str) -> str:
+    lines = [
+        "🎉 セルフチェック合格です！おめでとう！" if passed else "😢 今回は合格ラインに届きませんでした。",
+        f"スコア: {state.score} / {len(QUESTIONS)}点（合格ライン: {PASS_SCORE}点）",
+    ]
+    if passed:
+        if promote_note:
+            lines.append(promote_note)
+    else:
+        lines.append("焦らなくて大丈夫です。何度でも再挑戦できるので、落ち着いたときにまた押してくださいね🌸")
+    return "\n".join(lines)
+
+
+async def send_selfcheck_log(interaction: discord.Interaction, state: QuizState, passed: bool, promote_note: str):
+    if SELFCHECK_LOG_CHANNEL_ID is None:
+        return
+    channel = client.get_channel(SELFCHECK_LOG_CHANNEL_ID)
+    if channel is None:
+        print(f"  セルフチェック: ログチャンネル {SELFCHECK_LOG_CHANNEL_ID} が見つかりません")
+        return
+    embed = discord.Embed(
+        title="✅ セルフチェック合格" if passed else "❌ セルフチェック不合格",
+        color=0x5865F2,
+        timestamp=datetime.datetime.now(datetime.timezone.utc),
+    )
+    embed.add_field(name="対象者", value=f"{interaction.user.mention}（{interaction.user}）", inline=False)
+    embed.add_field(name="スコア", value=f"{state.score} / {len(QUESTIONS)}点（合格ライン {PASS_SCORE}点）", inline=False)
+    if promote_note:
+        embed.add_field(name="ロール処理", value=promote_note, inline=False)
+    embed.set_footer(text=f"ユーザーID: {interaction.user.id}")
+    try:
+        await channel.send(embed=embed)
+    except discord.Forbidden:
+        print(f"  セルフチェック: ログチャンネル {SELFCHECK_LOG_CHANNEL_ID} への送信権限がありません")
+
+
+async def finish_selfcheck(interaction: discord.Interaction, state: QuizState):
+    passed = state.score >= PASS_SCORE
+    promote_note = ""
+
+    if passed and AUTO_PROMOTE:
+        guild = interaction.guild
+        member = interaction.user
+        lv2_role = guild.get_role(LV2_ROLE_ID) if LV2_ROLE_ID else None
+        lv1_role = guild.get_role(LV1_ROLE_ID) if LV1_ROLE_ID else None
+
+        if lv2_role is None:
+            promote_note = "⚠️ self_check.lv2_role_id の設定が正しくないため、ロールを付与できませんでした。手動付与をお願いします。"
+        else:
+            try:
+                await member.add_roles(lv2_role, reason="セルフチェック合格")
+                added = True
+            except discord.Forbidden:
+                added = False
+
+            removed = True
+            if added and lv1_role is not None and lv1_role in member.roles:
+                try:
+                    await member.remove_roles(lv1_role, reason="セルフチェック合格")
+                except discord.Forbidden:
+                    removed = False
+
+            if not added:
+                promote_note = (
+                    "⚠️ Lv2ロールの付与に失敗しました（botのロール位置がLv2より下にある可能性があります）。"
+                    "手動付与待ちの状態です。管理人にお声がけください。"
+                )
+            elif not removed:
+                promote_note = (
+                    "🎉 Lv2ロールは付与できましたが、Lv1ロールの解除に失敗しました（権限不足）。"
+                    "Lv1ロールの手動解除をお願いします。"
+                )
+            else:
+                promote_note = "🎉 Lv2ロールを自動付与しました！"
+    elif passed:
+        promote_note = "ℹ️ self_check.auto_promote=false のため、ロール変更は行われていません（ログのみ）。"
+
+    result_text = format_selfcheck_result(state, passed, promote_note)
+    await interaction.response.edit_message(content=result_text, view=None)
+    await send_selfcheck_log(interaction, state, passed, promote_note)
+
+
+async def advance_selfcheck(interaction: discord.Interaction, state: QuizState):
+    if state.index < len(QUESTIONS):
+        view = SelfCheckAnswerView(state)
+        await interaction.response.edit_message(content=format_question(state), view=view)
+        state.message = await interaction.original_response()
+    else:
+        await finish_selfcheck(interaction, state)
+
+
+class SelfCheckAnswerView(discord.ui.View):
+    def __init__(self, state: QuizState):
+        remaining = QUIZ_TIMEOUT_SECONDS - (time.monotonic() - state.start_time)
+        super().__init__(timeout=max(remaining, 1))
+        self.state = state
+
+    async def on_timeout(self):
+        if self.state.message is None:
+            return
+        try:
+            await self.state.message.edit(
+                content="⌛ セルフチェックの制限時間（10分）が過ぎました。もう一度パネルのボタンから挑戦してください。",
+                view=None,
+            )
+        except discord.HTTPException:
+            pass
+
+    async def _answer(self, interaction: discord.Interaction, is_yes: bool):
+        if interaction.user.id != self.state.user_id:
+            await interaction.response.send_message(
+                "これはあなた専用のセルフチェックです。自分のパネルから挑戦してくださいね。", ephemeral=True
+            )
+            return
+        if is_yes:
+            self.state.score += 1
+        self.state.index += 1
+        self.stop()
+        await advance_selfcheck(interaction, self.state)
+
+    @discord.ui.button(label="はい", emoji="✅", style=discord.ButtonStyle.success, custom_id="selfcheck_quiz_yes")
+    async def yes_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._answer(interaction, True)
+
+    @discord.ui.button(label="いいえ", emoji="❌", style=discord.ButtonStyle.secondary, custom_id="selfcheck_quiz_no")
+    async def no_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._answer(interaction, False)
+
+
+class SelfCheckPanelView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)  # persistent view（再起動後も有効）
+
+    @discord.ui.button(label="セルフチェックを始める", emoji="📋", style=discord.ButtonStyle.primary, custom_id="selfcheck_start_button")
+    async def start(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.guild is None or not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message("このボタンはサーバー内でのみ使えます。", ephemeral=True)
+            return
+        if not QUESTIONS:
+            await interaction.response.send_message(
+                "設問が未設定です。config.json の self_check.questions を確認してください。", ephemeral=True
+            )
+            return
+
+        member = interaction.user
+        lv2_role = interaction.guild.get_role(LV2_ROLE_ID) if LV2_ROLE_ID else None
+        if lv2_role is not None and lv2_role in member.roles:
+            await interaction.response.send_message("すでにLv2以上です🌸 セルフチェックは不要ですよ。", ephemeral=True)
+            return
+
+        state = QuizState(member.id)
+        view = SelfCheckAnswerView(state)
+        await interaction.response.send_message(content=format_question(state), view=view, ephemeral=True)
+        state.message = await interaction.original_response()
+
+
+# ============================================================
 # イベントハンドラ
 # ============================================================
+@client.event
+async def setup_hook():
+    client.add_view(SelfCheckPanelView())  # 再起動後もセルフチェックパネルのボタンを有効化
+
+
 @client.event
 async def on_ready():
     print(f"Bot起動: {client.user}")
@@ -465,6 +664,7 @@ async def on_ready():
     print(f"  今日の話題: {'ON' if TOPIC_ENABLED and TOPIC_CHANNEL_ID else 'OFF'}")
     print(f"  チャンネル表示リマインド: {'ON' if REMINDER_ENABLED and REMINDER_CHANNEL_IDS else 'OFF'}")
     print(f"  共感リアクション: {'ON' if EMPATHY_ENABLED else 'OFF'}")
+    print(f"  マナーセルフチェック: {'ON' if SELFCHECK_ENABLED else 'OFF'}")
     print(f"  キープアライブ: {'ON' if KOYEB_URL else 'OFF'}")
     print("─" * 40)
 
@@ -573,6 +773,7 @@ async def status_command(interaction: discord.Interaction):
     embed.add_field(name="今日の話題", value="ON" if TOPIC_ENABLED and TOPIC_CHANNEL_ID else "OFF", inline=True)
     embed.add_field(name="チャンネル表示リマインド", value="ON" if REMINDER_ENABLED and REMINDER_CHANNEL_IDS else "OFF", inline=True)
     embed.add_field(name="共感リアクション", value="ON" if EMPATHY_ENABLED else "OFF", inline=True)
+    embed.add_field(name="マナーセルフチェック", value="ON" if SELFCHECK_ENABLED else "OFF", inline=True)
     embed.add_field(name="キープアライブ", value="ON" if KOYEB_URL else "OFF", inline=True)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -598,6 +799,29 @@ async def test_welcome_command(interaction: discord.Interaction):
         ephemeral=True
     )
     await handle_member_join(interaction.user)
+
+
+@tree.command(name="セルフチェック設置", description="マナーセルフチェックのパネルを設置します（管理者専用）")
+async def setup_selfcheck_command(interaction: discord.Interaction):
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("このコマンドは管理者専用です。", ephemeral=True)
+        return
+    if not SELFCHECK_ENABLED:
+        await interaction.response.send_message(
+            "セルフチェック機能が無効です。config.json の self_check.enabled を確認してください。", ephemeral=True
+        )
+        return
+
+    embed = discord.Embed(
+        title="📋 マナーセルフチェック",
+        description=(
+            f"Lv2への昇格には、マナーに関する全{len(QUESTIONS)}問のセルフチェックに答えてね😊\n"
+            f"{PASS_SCORE}点以上で合格すると、その場でLv2ロールが自動で付きます。\n"
+            "不合格でも何度でも挑戦できるので、気軽にボタンを押してみてください🌸"
+        ),
+        color=0x5865F2,
+    )
+    await interaction.response.send_message(embed=embed, view=SelfCheckPanelView())
 
 
 # ============================================================
