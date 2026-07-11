@@ -824,6 +824,38 @@ class SelfCheckPanelView(discord.ui.View):
         state.message = await interaction.original_response()
 
 
+vc_reminder_last_sent = {}  # { user_id: 最後にVC入室案内を送ったUTC日時 }（再起動でリセットされる）
+
+
+async def handle_vc_selfcheck_reminder(member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
+    """Lv2未満のメンバーがVCに入室したら、そのVCのチャットにセルフチェック案内をメンション付きで送る"""
+    if member.bot:
+        return
+    # 新規入室のみ対象（ミュート切替・画面共有・VC間の移動では送らない）
+    if before.channel is not None or after.channel is None:
+        return
+    cfg = cfg_self_check()
+    if not cfg.get("enabled", False) or not cfg.get("vc_reminder_enabled", False):
+        return
+    role_ids = {role.id for role in member.roles}
+    if cfg.get("lv2_role_id") in role_ids or cfg.get("lv3_role_id") in role_ids:
+        return
+    # 出入りのたびに連投しないよう、同じ人への案内はクールダウンを空ける
+    cooldown = datetime.timedelta(hours=cfg.get("vc_reminder_cooldown_hours", 12))
+    now = datetime.datetime.now(datetime.timezone.utc)
+    last = vc_reminder_last_sent.get(member.id)
+    if last is not None and now - last < cooldown:
+        return
+    vc_reminder_last_sent[member.id] = now
+    try:
+        await after.channel.send(
+            f"{member.mention} セルフチェックをお願いします\n"
+            "合格すれば画像添付、画面共有などが可能になります"
+        )
+    except discord.HTTPException:
+        print(f"  VCセルフチェック案内: {after.channel} への送信に失敗しました")
+
+
 # ============================================================
 # 機能9: 消えるつぶやき（1〜60分後に自動削除→ログチャンネルへ記録）
 # ============================================================
@@ -1245,6 +1277,12 @@ async def on_ready():
 async def on_member_join(member: discord.Member):
     """サーバーに新メンバーが参加したときに発火"""
     await handle_member_join(member)
+
+
+@client.event
+async def on_voice_state_update(member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
+    """VCの入退室・状態変化のたびに発火"""
+    await handle_vc_selfcheck_reminder(member, before, after)
 
 
 @client.event
