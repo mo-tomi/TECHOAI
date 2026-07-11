@@ -1439,6 +1439,46 @@ async def setup_selfcheck_command(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed, view=SelfCheckPanelView())
 
 
+@tree.command(name="lv1一括付与", description="レベルロールを持っていない全メンバーにLv1を付与します（管理者専用）")
+async def bulk_assign_lv1_command(interaction: discord.Interaction):
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("このコマンドは管理者専用です。", ephemeral=True)
+        return
+
+    cfg = cfg_self_check()
+    lv1_role = interaction.guild.get_role(cfg.get("lv1_role_id") or 0)
+    lv2_role_id = cfg.get("lv2_role_id")
+    lv3_role_id = cfg.get("lv3_role_id")
+    if lv1_role is None:
+        await interaction.response.send_message(
+            "Lv1ロールが見つかりません。config.json の self_check.lv1_role_id を確認してください。", ephemeral=True
+        )
+        return
+
+    await interaction.response.defer(ephemeral=True)
+
+    added = 0
+    skipped = 0
+    failed = 0
+    async for member in interaction.guild.fetch_members(limit=None):
+        if member.bot:
+            continue
+        role_ids = {role.id for role in member.roles}
+        if lv1_role.id in role_ids or lv2_role_id in role_ids or lv3_role_id in role_ids:
+            skipped += 1
+            continue
+        try:
+            await member.add_roles(lv1_role, reason="Lv1一括付与コマンド")
+            added += 1
+        except (discord.Forbidden, discord.HTTPException):
+            failed += 1
+
+    await interaction.followup.send(
+        f"Lv1一括付与が完了しました：付与 {added}名 / スキップ（既にLv1〜Lv3を所持） {skipped}名 / 失敗 {failed}名",
+        ephemeral=True,
+    )
+
+
 # ============================================================
 # BOT起動
 # ============================================================
