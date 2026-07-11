@@ -812,8 +812,9 @@ class SelfCheckPanelView(discord.ui.View):
             next_dt = datetime.datetime.now(datetime.timezone.utc) + remaining
             jst = datetime.timezone(datetime.timedelta(hours=9))
             next_str = next_dt.astimezone(jst).strftime("%Y/%m/%d")
+            cooldown_days = cfg.get("cooldown_days", 30)
             await interaction.response.send_message(
-                f"セルフチェックは月1回までです。次に挑戦できるのは {next_str}(JST)以降だよ🌸",
+                f"セルフチェックは{cooldown_days}日に1回までです。次に挑戦できるのは {next_str}(JST)以降だよ🌸",
                 ephemeral=True,
             )
             return
@@ -1468,13 +1469,22 @@ async def setup_selfcheck_command(interaction: discord.Interaction):
     pass_score = cfg.get("pass_score", 8)
     cooldown_days = cfg.get("cooldown_days", 30)
 
+    if cooldown_days > 0:
+        retry_note = (
+            f"不合格の場合も再挑戦できますが、次のチャレンジまで{cooldown_days}日空くので、"
+            "落ち着いてから挑戦してみてください🌸"
+        )
+    else:
+        retry_note = "不合格の場合も、落ち着いたタイミングで何度でも再挑戦できます🌸"
+
     embed = discord.Embed(
         title="📋 マナーセルフチェック",
         description=(
             f"Lv2への昇格には、マナーに関する全{len(questions)}問のセルフチェックに答えてね😊\n"
             f"{pass_score}点以上で合格すると、その場でLv2ロールが自動で付きます。\n"
-            f"不合格の場合も再挑戦できますが、次のチャレンジまで{cooldown_days}日空くので、"
-            "落ち着いてから挑戦してみてください🌸"
+            f"{retry_note}\n"
+            "\n"
+            "📝 回答内容は、運営（管理人・副管理人）にて保存・確認させていただきます。"
         ),
         color=0x5865F2,
     )
@@ -1487,12 +1497,13 @@ async def setup_selfcheck_command(interaction: discord.Interaction):
             "サーバーに入ると全員に付くロール。一部制限はありますが、VC参加・発言・読み上げbotの利用は問題なくできます\n"
             "\n"
             "**Lv2（一般）**\n"
-            "セルフチェック合格で自動付与。画像/ファイル添付、音楽bot等のコマンドも利用可能に\n"
+            "セルフチェック合格で自動付与。画像/ファイル添付、画面共有、音楽botの操作などができるようになります\n"
             "\n"
             "**Lv3**\n"
             "管理人・副管理人が信頼できると判断したメンバーに手動で付与するロール（セルフチェック対象外）\n"
             "\n"
-            "※マナーが守れていない場合など、管理人・副管理人の判断でLvを下げる場合がございます"
+            "※マナーが守れていない場合や、セルフチェックの回答と普段の様子に差異があると感じた場合、"
+            "管理人・副管理人の判断でLvを下げる場合がございます"
         ),
         inline=False,
     )
