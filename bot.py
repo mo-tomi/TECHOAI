@@ -605,6 +605,7 @@ class QuizState:
         self.message = None  # discord.Message、タイムアウト時の編集用
         self.questions = questions
         self.pass_score = pass_score
+        self.answers = []  # 設問ごとの回答（True=はい / False=いいえ）、運営ログ用
 
 
 def format_question(state: QuizState) -> str:
@@ -645,6 +646,22 @@ async def send_selfcheck_log(interaction: discord.Interaction, state: QuizState,
     )
     embed.add_field(name="対象者", value=f"{interaction.user.mention}（{interaction.user}）", inline=False)
     embed.add_field(name="スコア", value=f"{state.score} / {len(state.questions)}点（合格ライン {state.pass_score}点）", inline=False)
+    answer_lines = [
+        f"{'✅' if ans else '❌'} Q{i + 1}. {q}"
+        for i, (q, ans) in enumerate(zip(state.questions, state.answers))
+    ]
+    # embedフィールドは1024文字上限のため、超える場合は複数フィールドに分割する
+    chunk = ""
+    part = 1
+    for line in answer_lines:
+        if chunk and len(chunk) + 1 + len(line) > 1024:
+            embed.add_field(name="回答内容" if part == 1 else f"回答内容（続き{part}）", value=chunk, inline=False)
+            part += 1
+            chunk = line
+        else:
+            chunk = f"{chunk}\n{line}" if chunk else line
+    if chunk:
+        embed.add_field(name="回答内容" if part == 1 else f"回答内容（続き{part}）", value=chunk, inline=False)
     if promote_note:
         embed.add_field(name="ロール処理", value=promote_note, inline=False)
     embed.set_footer(text=f"ユーザーID: {interaction.user.id}")
@@ -741,6 +758,7 @@ class SelfCheckAnswerView(discord.ui.View):
             return
         if is_yes:
             self.state.score += 1
+        self.state.answers.append(is_yes)
         self.state.index += 1
         self.stop()
         await advance_selfcheck(interaction, self.state)
