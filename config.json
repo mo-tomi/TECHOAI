@@ -117,7 +117,7 @@
     "log_channel_id": 1524978165037137941,
     "pass_score": 8,
     "auto_promote": true,
-    "cooldown_days": 0,
+    "cooldown_days": 30,
     "vc_reminder_enabled": true,
     "vc_reminder_cooldown_hours": 12,
     "questions": [
