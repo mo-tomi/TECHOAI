@@ -618,7 +618,14 @@ def format_question(state: QuizState) -> str:
     )
 
 
-def format_selfcheck_result(state: QuizState, passed: bool, promote_note: str) -> str:
+def format_answer_lines(state: QuizState) -> list:
+    return [
+        f"{'✅' if ans else '❌'} Q{i + 1}. {q}"
+        for i, (q, ans) in enumerate(zip(state.questions, state.answers))
+    ]
+
+
+def format_selfcheck_result(state: QuizState, passed: bool, promote_note: str, dm_sent: bool) -> str:
     lines = [
         "🎉 セルフチェック合格です！おめでとう！" if passed else "😢 今回は合格ラインに届きませんでした。",
         f"スコア: {state.score} / {len(state.questions)}点（合格ライン: {state.pass_score}点）",
@@ -627,8 +634,33 @@ def format_selfcheck_result(state: QuizState, passed: bool, promote_note: str) -
         if promote_note:
             lines.append(promote_note)
     else:
-        lines.append("焦らなくて大丈夫です。何度でも再挑戦できるので、落ち着いたときにまた押してくださいね🌸")
+        lines.append("焦らなくて大丈夫です。落ち着いたときにまた挑戦してくださいね🌸")
+    lines.append("")
+    if dm_sent:
+        lines.append("📝 あなたの回答（DMにも控えを送りました）")
+    else:
+        lines.append("📝 あなたの回答（この画面は閉じると消えるので、必要ならスクリーンショットで保存してね）")
+    lines.extend(format_answer_lines(state))
     return "\n".join(lines)
+
+
+async def send_selfcheck_dm_copy(user, state: QuizState, passed: bool) -> bool:
+    """回答者本人へ回答の控えをDMで送る。DMを閉じている場合はFalseを返す"""
+    embed = discord.Embed(
+        title="📋 セルフチェックの回答控え",
+        description=(
+            ("🎉 合格" if passed else "❌ 不合格")
+            + f"（スコア {state.score} / {len(state.questions)}点・合格ライン {state.pass_score}点）\n\n"
+            + "\n".join(format_answer_lines(state))
+        ),
+        color=0x5865F2,
+        timestamp=datetime.datetime.now(datetime.timezone.utc),
+    )
+    try:
+        await user.send(embed=embed)
+        return True
+    except discord.HTTPException:
+        return False  # DMを受け取らない設定の場合など
 
 
 async def send_selfcheck_log(interaction: discord.Interaction, state: QuizState, passed: bool, promote_note: str):
@@ -637,8 +669,12 @@ async def send_selfcheck_log(interaction: discord.Interaction, state: QuizState,
         return
     channel = client.get_channel(log_channel_id)
     if channel is None:
-        print(f"  セルフチェック: ログチャンネル {log_channel_id} が見つかりません")
-        return
+        # 再起動直後などキャッシュにない場合はAPIから直接取得する
+        try:
+            channel = await client.fetch_channel(log_channel_id)
+        except discord.HTTPException as e:
+            print(f"  セルフチェック: ログチャンネル {log_channel_id} を取得できません（{e}）")
+            return
     embed = discord.Embed(
         title="✅ セルフチェック合格" if passed else "❌ セルフチェック不合格",
         color=0x5865F2,
@@ -667,8 +703,8 @@ async def send_selfcheck_log(interaction: discord.Interaction, state: QuizState,
     embed.set_footer(text=f"ユーザーID: {interaction.user.id}")
     try:
         await channel.send(embed=embed)
-    except discord.Forbidden:
-        print(f"  セルフチェック: ログチャンネル {log_channel_id} への送信権限がありません")
+    except discord.HTTPException as e:
+        print(f"  セルフチェック: ログチャンネル {log_channel_id} への送信に失敗しました（{e}）")
 
 
 async def finish_selfcheck(interaction: discord.Interaction, state: QuizState):
@@ -719,7 +755,8 @@ async def finish_selfcheck(interaction: discord.Interaction, state: QuizState):
 
     record_selfcheck_attempt(interaction.user.id)
 
-    result_text = format_selfcheck_result(state, passed, promote_note)
+    dm_sent = await send_selfcheck_dm_copy(interaction.user, state, passed)
+    result_text = format_selfcheck_result(state, passed, promote_note, dm_sent)
     await interaction.response.edit_message(content=result_text, view=None)
     await send_selfcheck_log(interaction, state, passed, promote_note)
 
