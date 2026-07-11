@@ -855,7 +855,8 @@ async def handle_vc_selfcheck_reminder(member: discord.Member, before: discord.V
         check_label = "セルフチェック"
     try:
         await after.channel.send(
-            f"{member.mention} お時間がある際に{check_label}をお願いします\n"
+            f"{member.mention}\n"
+            f"お時間がある際に{check_label}をお願いします\n"
             "合格すればLv2になり画像添付、画面共有などが可能になります"
         )
     except discord.HTTPException:
