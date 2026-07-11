@@ -848,10 +848,15 @@ async def handle_vc_selfcheck_reminder(member: discord.Member, before: discord.V
     if last is not None and now - last < cooldown:
         return
     vc_reminder_last_sent[member.id] = now
+    panel_channel_id = cfg.get("vc_reminder_panel_channel_id")
+    if panel_channel_id:
+        check_label = f"[セルフチェック](https://discord.com/channels/{member.guild.id}/{panel_channel_id})"
+    else:
+        check_label = "セルフチェック"
     try:
         await after.channel.send(
-            f"{member.mention} セルフチェックをお願いします\n"
-            "合格すれば画像添付、画面共有などが可能になります"
+            f"{member.mention} お時間がある際に{check_label}をお願いします\n"
+            "合格すればLv2になり画像添付、画面共有などが可能になります"
         )
     except discord.HTTPException:
         print(f"  VCセルフチェック案内: {after.channel} への送信に失敗しました")
