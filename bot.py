@@ -887,14 +887,17 @@ async def handle_vc_selfcheck_reminder(member: discord.Member, before: discord.V
     vc_reminder_last_sent[member.id] = now
     panel_channel_id = cfg.get("vc_reminder_panel_channel_id")
     if panel_channel_id:
-        check_label = f"[セルフチェック](https://discord.com/channels/{member.guild.id}/{panel_channel_id})"
+        panel_link = f"https://discord.com/channels/{member.guild.id}/{panel_channel_id} から"
     else:
-        check_label = "セルフチェック"
+        panel_link = ""
+    # 自己紹介botの入室通知より後に表示されるよう、少し待ってから送る
+    await asyncio.sleep(cfg.get("vc_reminder_delay_seconds", 7))
     try:
         await after.channel.send(
             f"{member.mention}\n"
-            f"お時間がある際に{check_label}をお願いします\n"
-            "合格すればLv2になり画像添付、画面共有などが可能になります"
+            "いらっしゃい🌸 ゆっくりしていってね\n"
+            f"お時間がある際に {panel_link}セルフチェックをお願いします📋\n"
+            "合格するとLv2になって、画像の添付や画面共有などができるようになりますよ✨"
         )
     except discord.HTTPException:
         print(f"  VCセルフチェック案内: {after.channel} への送信に失敗しました")

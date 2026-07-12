@@ -121,6 +121,7 @@
     "vc_reminder_enabled": true,
     "vc_reminder_cooldown_hours": 12,
     "vc_reminder_panel_channel_id": 1524976863125049494,
+    "vc_reminder_delay_seconds": 7,
     "questions": [
       "VCに入るとき、今の雰囲気（作業中・雑談中など）を確認してから話し始めることができる",
       "音楽bot（Jockie Music）を再生する前に、一緒にいる通話メンバーに一声かけられる",
