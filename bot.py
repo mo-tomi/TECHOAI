@@ -608,8 +608,20 @@ class QuizState:
         self.answers = []  # 設問ごとの回答（True=はい / False=いいえ）、運営ログ用
 
 
+def question_text(q) -> str:
+    """設問データから本文を取り出す。文字列でも{text, correct}オブジェクトでもよい"""
+    return q.get("text", "") if isinstance(q, dict) else q
+
+
+def question_expects_yes(q) -> bool:
+    """その設問の正解が「はい」かどうか。correctが「いいえ」のときだけFalse（文字列や未指定は従来通りはい正解）"""
+    if isinstance(q, dict):
+        return q.get("correct", "はい") != "いいえ"
+    return True
+
+
 def format_question(state: QuizState) -> str:
-    q = state.questions[state.index]
+    q = question_text(state.questions[state.index])
     return (
         f"📋 マナーセルフチェック（{state.index + 1}/{len(state.questions)}問目）\n\n"
         f"**Q{state.index + 1}. {q}**\n\n"
@@ -619,7 +631,7 @@ def format_question(state: QuizState) -> str:
 
 def format_answer_lines(state: QuizState) -> list:
     return [
-        f"{'✅' if ans else '❌'} Q{i + 1}. {q}"
+        f"Q{i + 1}. {question_text(q)}（あなたの回答: {'はい' if ans else 'いいえ'}）"
         for i, (q, ans) in enumerate(zip(state.questions, state.answers))
     ]
 
@@ -684,7 +696,8 @@ async def send_selfcheck_log(interaction: discord.Interaction, state: QuizState,
     embed.add_field(name="対象者", value=f"{interaction.user.mention}（{interaction.user}）", inline=False)
     embed.add_field(name="「はい」の数", value=f"{state.score} / {len(state.questions)}問（付与ライン {state.pass_score}問）", inline=False)
     answer_lines = [
-        f"{'✅' if ans else '❌'} Q{i + 1}. {q}"
+        f"{'✅' if ans == question_expects_yes(q) else '⚠️'} Q{i + 1}. {question_text(q)}"
+        f"（回答: {'はい' if ans else 'いいえ'}）"
         for i, (q, ans) in enumerate(zip(state.questions, state.answers))
     ]
     # embedフィールドは1024文字上限のため、超える場合は複数フィールドに分割する
@@ -794,7 +807,8 @@ class SelfCheckAnswerView(discord.ui.View):
                 "これはあなた専用のセルフチェックです。自分のパネルから挑戦してくださいね。", ephemeral=True
             )
             return
-        if is_yes:
+        current_q = self.state.questions[self.state.index]
+        if is_yes == question_expects_yes(current_q):
             self.state.score += 1
         self.state.answers.append(is_yes)
         self.state.index += 1
