@@ -611,8 +611,7 @@ class QuizState:
 def format_question(state: QuizState) -> str:
     q = state.questions[state.index]
     return (
-        f"📋 マナーセルフチェック（{state.index + 1}/{len(state.questions)}問目）\n"
-        f"現在のスコア: {state.score}点\n\n"
+        f"📋 マナーセルフチェック（{state.index + 1}/{len(state.questions)}問目）\n\n"
         f"**Q{state.index + 1}. {q}**\n\n"
         "下のボタンで回答してね"
     )
@@ -678,12 +677,12 @@ async def send_selfcheck_log(interaction: discord.Interaction, state: QuizState,
             print(f"  セルフチェック: ログチャンネル {log_channel_id} を取得できません（{e}）")
             return
     embed = discord.Embed(
-        title="✅ セルフチェック合格" if passed else "❌ セルフチェック不合格",
+        title="✅ Lv2付与" if passed else "⬜ Lv2未付与",
         color=0x5865F2,
         timestamp=datetime.datetime.now(datetime.timezone.utc),
     )
     embed.add_field(name="対象者", value=f"{interaction.user.mention}（{interaction.user}）", inline=False)
-    embed.add_field(name="スコア", value=f"{state.score} / {len(state.questions)}点（合格ライン {state.pass_score}点）", inline=False)
+    embed.add_field(name="「はい」の数", value=f"{state.score} / {len(state.questions)}問（付与ライン {state.pass_score}問）", inline=False)
     answer_lines = [
         f"{'✅' if ans else '❌'} Q{i + 1}. {q}"
         for i, (q, ans) in enumerate(zip(state.questions, state.answers))
@@ -728,7 +727,7 @@ async def finish_selfcheck(interaction: discord.Interaction, state: QuizState):
             promote_note = "⚠️ self_check.lv2_role_id の設定が正しくないため、ロールを付与できませんでした。手動付与をお願いします。"
         else:
             try:
-                await member.add_roles(lv2_role, reason="セルフチェック合格")
+                await member.add_roles(lv2_role, reason="セルフチェック完了によるLv2付与")
                 added = True
             except discord.Forbidden:
                 added = False
@@ -736,7 +735,7 @@ async def finish_selfcheck(interaction: discord.Interaction, state: QuizState):
             removed = True
             if added and lv1_role is not None and lv1_role in member.roles:
                 try:
-                    await member.remove_roles(lv1_role, reason="セルフチェック合格")
+                    await member.remove_roles(lv1_role, reason="セルフチェック完了によるLv2付与")
                 except discord.Forbidden:
                     removed = False
 
@@ -899,7 +898,7 @@ async def handle_vc_selfcheck_reminder(member: discord.Member, before: discord.V
             f"{member.mention}\n"
             "いらっしゃい🌸 ゆっくりしていってね\n"
             f"お時間がある際に {panel_link}セルフチェックをお願いします📋\n"
-            "合格するとLv2になって、画像の添付や画面共有などができるようになりますよ✨"
+            "回答するとLv2になって、画像の添付や画面共有などができるようになりますよ✨"
         )
     except discord.HTTPException:
         print(f"  VCセルフチェック案内: {after.channel} への送信に失敗しました")
