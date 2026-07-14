@@ -898,7 +898,7 @@ async def handle_vc_selfcheck_reminder(member: discord.Member, before: discord.V
             f"{member.mention}\n"
             "いらっしゃい🌸 ゆっくりしていってね\n"
             f"お時間がある際に {panel_link}セルフチェックをお願いします📋\n"
-            "回答するとLv2になって、画像の添付や画面共有などができるようになりますよ✨"
+            "回答内容に応じてLv2になると、画像の添付や画面共有などができるようになりますよ✨"
         )
     except discord.HTTPException:
         print(f"  VCセルフチェック案内: {after.channel} への送信に失敗しました")
