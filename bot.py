@@ -627,14 +627,16 @@ def format_answer_lines(state: QuizState) -> list:
 
 def format_selfcheck_result(state: QuizState, passed: bool, promote_note: str, dm_sent: bool) -> str:
     lines = [
-        "🎉 セルフチェック合格です！おめでとう！" if passed else "😢 今回は合格ラインに届きませんでした。",
-        f"スコア: {state.score} / {len(state.questions)}点（合格ライン: {state.pass_score}点）",
+        "📋 セルフチェックお疲れさまでした！",
     ]
     if passed:
         if promote_note:
             lines.append(promote_note)
     else:
-        lines.append("焦らなくて大丈夫です。落ち着いたときにまた挑戦してくださいね🌸")
+        lines.append(
+            "今回はLv2の付与に至りませんでした。焦らなくて大丈夫、"
+            "落ち着いたときにまた挑戦してくださいね🌸"
+        )
     lines.append("")
     if dm_sent:
         lines.append("📝 あなたの回答（DMにも控えを送りました）")
@@ -649,8 +651,8 @@ async def send_selfcheck_dm_copy(user, state: QuizState, passed: bool) -> bool:
     embed = discord.Embed(
         title="📋 セルフチェックの回答控え",
         description=(
-            ("🎉 合格" if passed else "❌ 不合格")
-            + f"（スコア {state.score} / {len(state.questions)}点・合格ライン {state.pass_score}点）\n\n"
+            ("🌸 Lv2ロールが付与されました" if passed else "今回はLv2の付与に至りませんでした")
+            + "\n\n"
             + "\n".join(format_answer_lines(state))
         ),
         color=0x5865F2,
@@ -1512,16 +1514,15 @@ async def setup_selfcheck_command(interaction: discord.Interaction):
         return
 
     questions = cfg.get("questions", [])
-    pass_score = cfg.get("pass_score", 8)
     cooldown_days = cfg.get("cooldown_days", 30)
 
     if cooldown_days > 0:
         retry_note = (
-            f"不合格の場合も再挑戦できますが、次のチャレンジまで{cooldown_days}日空くので、"
-            "落ち着いてから挑戦してみてください🌸"
+            f"すぐにLv2が付かなかったときも、次のチャレンジまで{cooldown_days}日空きますが、"
+            "落ち着いてからまた挑戦してみてください🌸"
         )
     else:
-        retry_note = "不合格の場合も、落ち着いたタイミングで何度でも再挑戦できます🌸"
+        retry_note = "すぐにLv2が付かなかったときも、落ち着いたタイミングで何度でも挑戦できます🌸"
 
     embed = discord.Embed(
         title="📋 マナーセルフチェック",
@@ -1531,7 +1532,8 @@ async def setup_selfcheck_command(interaction: discord.Interaction):
             "⚠️ 答える前に、こちらのお知らせを必ず確認してね👇\n"
             "https://discord.com/channels/1300291307314610316/1404397500957200474\n"
             "\n"
-            f"{pass_score}点以上で合格すると、その場でLv2ロールが自動で付きます。\n"
+            "セルフチェックを終えると、回答内容に応じてその場でLv2ロールが付くことがあります。\n"
+            "（付与の基準についてはお答えできません🙏 自分の言葉で、正直に答えてくださいね）\n"
             f"{retry_note}\n"
             "🔄 セルフチェックは1か月に1回リセットされます（次の挑戦までしばらく空きます）。\n"
             "\n"
@@ -1548,7 +1550,7 @@ async def setup_selfcheck_command(interaction: discord.Interaction):
             "サーバーに入ると全員に付くロール。一部制限はありますが、VC参加・発言・読み上げbotの利用は問題なくできます\n"
             "\n"
             "**Lv2（一般）**\n"
-            "セルフチェック合格で自動付与。画像/ファイル添付、画面共有、音楽botの操作などができるようになります\n"
+            "セルフチェックの回答内容に応じて自動付与。画像/ファイル添付、画面共有、音楽botの操作などができるようになります\n"
             "\n"
             "**Lv3**\n"
             "管理人・副管理人が信頼できると判断したメンバーに手動で付与するロール（セルフチェック対象外）\n"
