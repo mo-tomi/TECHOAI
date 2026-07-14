@@ -1527,8 +1527,13 @@ async def setup_selfcheck_command(interaction: discord.Interaction):
         title="📋 マナーセルフチェック",
         description=(
             f"Lv2への昇格には、マナーに関する全{len(questions)}問のセルフチェックに答えてね😊\n"
+            "\n"
+            "⚠️ 答える前に、こちらのお知らせを必ず確認してね👇\n"
+            "https://discord.com/channels/1300291307314610316/1404397500957200474\n"
+            "\n"
             f"{pass_score}点以上で合格すると、その場でLv2ロールが自動で付きます。\n"
             f"{retry_note}\n"
+            "🔄 セルフチェックは1か月に1回リセットされます（次の挑戦までしばらく空きます）。\n"
             "\n"
             "📝 回答内容は、運営（管理人・副管理人）にて保存・確認させていただきます。"
         ),
