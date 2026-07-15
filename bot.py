@@ -569,7 +569,10 @@ def load_selfcheck_state() -> dict:
         return {}
 
 
-selfcheck_state = load_selfcheck_state()  # { "ユーザーID(str)": "前回挑戦したISO日時" }
+# { "ユーザーID(str)": "前回挑戦したISO日時" }
+# ローカルJSONはKoyebの再デプロイで消えるため、正本は運営ログチャンネル。
+# 起動時に selfcheck_backfill() がログから再構築し、JSONは同一プロセス内のキャッシュとして使う
+selfcheck_state = load_selfcheck_state()
 
 
 def record_selfcheck_attempt(user_id: int):
@@ -590,6 +593,47 @@ def get_selfcheck_cooldown_remaining(user_id: int):
     if elapsed >= cooldown:
         return None
     return cooldown - elapsed
+
+
+SELFCHECK_LOG_FOOTER_PREFIX = "ユーザーID: "  # send_selfcheck_logのembedフッターと一致させること
+
+
+async def selfcheck_backfill():
+    """Koyebはディスクが再デプロイで消えるため、運営ログチャンネルの過去ログから
+    各ユーザーの最終挑戦日時を再構築する（起動時に毎回実行）。
+    クールダウンの判定に必要な期間分だけさかのぼる"""
+    cfg = cfg_self_check()
+    log_channel_id = cfg.get("log_channel_id")
+    if not log_channel_id:
+        print("セルフチェック: log_channel_id 未設定のためクールダウンの再構築をスキップ")
+        return
+    channel = client.get_channel(log_channel_id)
+    if channel is None:
+        try:
+            channel = await client.fetch_channel(log_channel_id)
+        except discord.HTTPException as e:
+            print(f"セルフチェック: ログチャンネル {log_channel_id} を取得できません（{e}）")
+            return
+
+    cooldown_days = cfg.get("cooldown_days", 30)
+    after = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=cooldown_days + 1)
+    total = 0
+    async for msg in channel.history(limit=None, after=after, oldest_first=True):
+        if client.user is None or msg.author.id != client.user.id:
+            continue
+        for embed in msg.embeds:
+            footer = embed.footer.text if embed.footer else None
+            if not footer or not footer.startswith(SELFCHECK_LOG_FOOTER_PREFIX):
+                continue
+            user_id_str = footer[len(SELFCHECK_LOG_FOOTER_PREFIX):].strip()
+            if not user_id_str.isdigit():
+                continue
+            attempted_at = embed.timestamp or msg.created_at
+            prev = selfcheck_state.get(user_id_str)
+            if prev is None or attempted_at > datetime.datetime.fromisoformat(prev):
+                selfcheck_state[user_id_str] = attempted_at.isoformat()
+                total += 1
+    print(f"セルフチェック: 運営ログから{total}件の挑戦記録を再構築しました")
 
 
 class QuizState:
@@ -1332,6 +1376,7 @@ async def on_ready():
         client.loop.create_task(keepalive_loop())
         client.loop.create_task(ephemeral_sweep_loop())
         client.loop.create_task(level_backfill())
+        client.loop.create_task(selfcheck_backfill())
         client.loop.create_task(knock_ensure_panel())
 
 
