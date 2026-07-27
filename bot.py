@@ -569,38 +569,58 @@ def load_selfcheck_state() -> dict:
         return {}
 
 
-# { "ユーザーID(str)": "前回挑戦したISO日時" }
+# { "ユーザーID(str)": { "fail_count": 直近連続不合格回数(ロック後は0に戻す), "locked_until": ロック解除ISO日時 or null } }
 # ローカルJSONはKoyebの再デプロイで消えるため、正本は運営ログチャンネル。
 # 起動時に selfcheck_backfill() がログから再構築し、JSONは同一プロセス内のキャッシュとして使う
 selfcheck_state = load_selfcheck_state()
 
 
-def record_selfcheck_attempt(user_id: int):
-    selfcheck_state[str(user_id)] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+def get_selfcheck_user_state(user_id: int) -> dict:
+    entry = selfcheck_state.get(str(user_id))
+    if not isinstance(entry, dict):  # 未挑戦、または旧形式（最終挑戦日時のみ）からの移行
+        return {"fail_count": 0, "locked_until": None}
+    return entry
+
+
+def record_selfcheck_attempt(user_id: int, passed: bool):
+    if passed:
+        fail_count = 0
+        locked_until_iso = None
+    else:
+        fail_count = get_selfcheck_user_state(user_id)["fail_count"] + 1
+        max_attempts = cfg_self_check().get("max_attempts", 3)
+        if fail_count >= max_attempts:
+            cooldown_days = cfg_self_check().get("cooldown_days", 30)
+            locked_until = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=cooldown_days)
+            locked_until_iso = locked_until.isoformat()
+            fail_count = 0  # ロック解除後にまた3回分挑戦できるようにリセット
+        else:
+            locked_until_iso = None
+    selfcheck_state[str(user_id)] = {"fail_count": fail_count, "locked_until": locked_until_iso}
     with open(SELFCHECK_STATE_PATH, "w", encoding="utf-8") as f:
         json.dump(selfcheck_state, f, ensure_ascii=False, indent=2)
 
 
 def get_selfcheck_cooldown_remaining(user_id: int):
-    """前回挑戦からクールダウン期間が明けていなければ、残り時間(timedelta)を返す。明けていればNone"""
-    last = selfcheck_state.get(str(user_id))
-    if last is None:
+    """3回連続不合格によるロック中であれば、解除までの残り時間(timedelta)を返す。ロック中でなければNone"""
+    locked_until = get_selfcheck_user_state(user_id).get("locked_until")
+    if locked_until is None:
         return None
-    last_dt = datetime.datetime.fromisoformat(last)
-    elapsed = datetime.datetime.now(datetime.timezone.utc) - last_dt
-    cooldown_days = cfg_self_check().get("cooldown_days", 30)
-    cooldown = datetime.timedelta(days=cooldown_days)
-    if elapsed >= cooldown:
+    locked_until_dt = datetime.datetime.fromisoformat(locked_until)
+    now = datetime.datetime.now(datetime.timezone.utc)
+    if now >= locked_until_dt:
         return None
-    return cooldown - elapsed
+    return locked_until_dt - now
 
 
 SELFCHECK_LOG_FOOTER_PREFIX = "ユーザーID: "  # send_selfcheck_logのembedフッターと一致させること
+SELFCHECK_LOG_TITLE_PASSED = "✅ Lv2付与"  # send_selfcheck_logのembedタイトルと一致させること
+SELFCHECK_LOG_TITLE_FAILED = "⬜ Lv2未付与"  # 同上
 
 
 async def selfcheck_backfill():
     """Koyebはディスクが再デプロイで消えるため、運営ログチャンネルの過去ログから
-    各ユーザーの最終挑戦日時を再構築する（起動時に毎回実行）。
+    各ユーザーの合否履歴を再現し、fail_count/locked_untilを再構築する（起動時に毎回実行）。
     クールダウンの判定に必要な期間分だけさかのぼる"""
     cfg = cfg_self_check()
     log_channel_id = cfg.get("log_channel_id")
@@ -616,8 +636,9 @@ async def selfcheck_backfill():
             return
 
     cooldown_days = cfg.get("cooldown_days", 30)
+    max_attempts = cfg.get("max_attempts", 3)
     after = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=cooldown_days + 1)
-    total = 0
+    attempts_by_user = {}  # { user_id_str: [(挑戦日時, 合格したか), ...] }（oldest_first）
     async for msg in channel.history(limit=None, after=after, oldest_first=True):
         if client.user is None or msg.author.id != client.user.id:
             continue
@@ -625,15 +646,37 @@ async def selfcheck_backfill():
             footer = embed.footer.text if embed.footer else None
             if not footer or not footer.startswith(SELFCHECK_LOG_FOOTER_PREFIX):
                 continue
+            if embed.title == SELFCHECK_LOG_TITLE_PASSED:
+                passed = True
+            elif embed.title == SELFCHECK_LOG_TITLE_FAILED:
+                passed = False
+            else:
+                continue
             user_id_str = footer[len(SELFCHECK_LOG_FOOTER_PREFIX):].strip()
             if not user_id_str.isdigit():
                 continue
             attempted_at = embed.timestamp or msg.created_at
-            prev = selfcheck_state.get(user_id_str)
-            if prev is None or attempted_at > datetime.datetime.fromisoformat(prev):
-                selfcheck_state[user_id_str] = attempted_at.isoformat()
-                total += 1
-    print(f"セルフチェック: 運営ログから{total}件の挑戦記録を再構築しました")
+            attempts_by_user.setdefault(user_id_str, []).append((attempted_at, passed))
+
+    for user_id_str, attempts in attempts_by_user.items():
+        fail_count = 0
+        locked_until = None
+        for attempted_at, passed in attempts:
+            if passed:
+                fail_count = 0
+                locked_until = None
+            else:
+                fail_count += 1
+                if fail_count >= max_attempts:
+                    locked_until = attempted_at + datetime.timedelta(days=cooldown_days)
+                    fail_count = 0
+                else:
+                    locked_until = None
+        selfcheck_state[user_id_str] = {
+            "fail_count": fail_count,
+            "locked_until": locked_until.isoformat() if locked_until else None,
+        }
+    print(f"セルフチェック: 運営ログから{len(attempts_by_user)}人分の挑戦記録を再構築しました")
 
 
 class QuizState:
@@ -733,7 +776,7 @@ async def send_selfcheck_log(interaction: discord.Interaction, state: QuizState,
             print(f"  セルフチェック: ログチャンネル {log_channel_id} を取得できません（{e}）")
             return
     embed = discord.Embed(
-        title="✅ Lv2付与" if passed else "⬜ Lv2未付与",
+        title=SELFCHECK_LOG_TITLE_PASSED if passed else SELFCHECK_LOG_TITLE_FAILED,
         color=0x5865F2,
         timestamp=datetime.datetime.now(datetime.timezone.utc),
     )
@@ -811,7 +854,7 @@ async def finish_selfcheck(interaction: discord.Interaction, state: QuizState):
     elif passed:
         promote_note = "ℹ️ self_check.auto_promote=false のため、ロール変更は行われていません（ログのみ）。"
 
-    record_selfcheck_attempt(interaction.user.id)
+    record_selfcheck_attempt(interaction.user.id, passed)
 
     dm_sent = await send_selfcheck_dm_copy(interaction.user, state, passed)
     result_text = format_selfcheck_result(state, passed, promote_note, dm_sent)
@@ -879,16 +922,18 @@ class SelfCheckPanelView(discord.ui.View):
             return
 
         cfg = cfg_self_check()
-        questions = cfg.get("questions", [])
+        question_pool = cfg.get("questions", [])
+        questions_per_quiz = cfg.get("questions_per_quiz", 10)
         pass_score = cfg.get("pass_score", 8)
         lv2_role_id = cfg.get("lv2_role_id")
         lv3_role_id = cfg.get("lv3_role_id")
 
-        if not questions:
+        if not question_pool:
             await interaction.response.send_message(
                 "設問が未設定です。config.json の self_check.questions を確認してください。", ephemeral=True
             )
             return
+        questions = random.sample(question_pool, min(questions_per_quiz, len(question_pool)))
 
         member = interaction.user
         lv2_role = interaction.guild.get_role(lv2_role_id) if lv2_role_id else None
@@ -908,9 +953,10 @@ class SelfCheckPanelView(discord.ui.View):
             next_dt = datetime.datetime.now(datetime.timezone.utc) + remaining
             jst = datetime.timezone(datetime.timedelta(hours=9))
             next_str = next_dt.astimezone(jst).strftime("%Y/%m/%d")
-            cooldown_days = cfg.get("cooldown_days", 30)
+            max_attempts = cfg.get("max_attempts", 3)
             await interaction.response.send_message(
-                f"セルフチェックは{cooldown_days}日に1回までです。次に挑戦できるのは {next_str}(JST)以降だよ🌸",
+                f"セルフチェックは{max_attempts}回連続で合格に至らなかったため、しばらくお休みだよ。"
+                f"次に挑戦できるのは {next_str}(JST)以降だよ🌸",
                 ephemeral=True,
             )
             return
@@ -1571,21 +1617,23 @@ async def setup_selfcheck_command(interaction: discord.Interaction):
         )
         return
 
-    questions = cfg.get("questions", [])
+    questions_per_quiz = cfg.get("questions_per_quiz", 10)
+    max_attempts = cfg.get("max_attempts", 3)
     cooldown_days = cfg.get("cooldown_days", 30)
 
     if cooldown_days > 0:
         retry_note = (
-            f"すぐにLv2が付かなかったときも、次のチャレンジまで{cooldown_days}日空きますが、"
-            "落ち着いてからまた挑戦してみてください🌸"
+            f"{max_attempts}回まで挑戦できます。{max_attempts}回とも合格に至らなかった場合は、"
+            f"次のチャレンジまで{cooldown_days}日空きますが、落ち着いてからまた挑戦してみてください🌸"
         )
     else:
-        retry_note = "すぐにLv2が付かなかったときも、落ち着いたタイミングで何度でも挑戦できます🌸"
+        retry_note = "落ち着いたタイミングで何度でも挑戦できます🌸"
 
     embed = discord.Embed(
         title="📋 マナーセルフチェック",
         description=(
-            f"Lv2への昇格には、マナーに関する全{len(questions)}問のセルフチェックに答えてね😊\n"
+            f"Lv2への昇格には、マナーに関する全{questions_per_quiz}問のセルフチェックに答えてね😊\n"
+            "（設問はプリセットの中からランダムに出題されます）\n"
             "\n"
             "⚠️ 答える前に、こちらのお知らせを必ず確認してね👇\n"
             "https://discord.com/channels/1300291307314610316/1404397500957200474\n"
@@ -1593,7 +1641,6 @@ async def setup_selfcheck_command(interaction: discord.Interaction):
             "セルフチェックを終えると、回答内容に応じてその場でLv2ロールが付くことがあります。\n"
             "（付与の基準についてはお答えできません🙏 自分の言葉で、正直に答えてくださいね）\n"
             f"{retry_note}\n"
-            "🔄 セルフチェックは1か月に1回リセットされます（次の挑戦までしばらく空きます）。\n"
             "\n"
             "📝 回答内容は、運営（管理人・副管理人）にて保存・確認させていただきます。"
         ),
