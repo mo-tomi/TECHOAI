@@ -717,8 +717,11 @@ def format_question(state: QuizState) -> str:
 
 
 def format_answer_lines(state: QuizState) -> list:
+    """回答控え用の整形済みブロック（1要素＝1設問、設問間は空行で区切って表示する）。
+    ✅/❌のような正誤を連想させる記号は使わない。付与基準は伏せているため、
+    本人向けの控えから合否を推測できてしまうのを避ける（運営ログ側は正誤付きで別に出す）"""
     return [
-        f"Q{i + 1}. {question_text(q)}（あなたの回答: {'はい' if ans else 'いいえ'}）"
+        f"**Q{i + 1}.** {question_text(q)}\n> 回答: {'はい' if ans else 'いいえ'}"
         for i, (q, ans) in enumerate(zip(state.questions, state.answers))
     ]
 
@@ -740,7 +743,8 @@ def format_selfcheck_result(state: QuizState, passed: bool, promote_note: str, d
         lines.append("📝 あなたの回答（DMにも控えを送りました）")
     else:
         lines.append("📝 あなたの回答（この画面は閉じると消えるので、必要ならスクリーンショットで保存してね）")
-    lines.extend(format_answer_lines(state))
+    lines.append("")
+    lines.append("\n\n".join(format_answer_lines(state)))
     return "\n".join(lines)
 
 
@@ -751,7 +755,7 @@ async def send_selfcheck_dm_copy(user, state: QuizState, passed: bool) -> bool:
         description=(
             ("🌸 Lv2ロールが付与されました" if passed else "今回はLv2の付与に至りませんでした")
             + "\n\n"
-            + "\n".join(format_answer_lines(state))
+            + "\n\n".join(format_answer_lines(state))
         ),
         color=0x5865F2,
         timestamp=datetime.datetime.now(datetime.timezone.utc),
