@@ -8,7 +8,7 @@
   },
 
   "welcome_on_join": {
-    "enabled": true,
+    "enabled": false,
     "channel_id": 1337037662326099998,
     "messages": [
       "やあ、{mention}。ピザ持ってきたよね？ 🍕\n冗談！ゆっくりしていってね。",
