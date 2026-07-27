@@ -1676,6 +1676,44 @@ async def setup_selfcheck_command(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed, view=SelfCheckPanelView())
 
 
+@tree.command(name="自分の投稿を削除", description="このチャンネルのてちょうAI自身の投稿をまとめて削除します（管理者専用）")
+@app_commands.describe(limit="さかのぼって確認する件数（1〜1000、既定100）")
+async def purge_own_messages_command(interaction: discord.Interaction, limit: int = 100):
+    """あいさつの連投などを片付ける用。削除対象はbot自身の投稿だけに限定し、
+    メンバーの発言は絶対に消さない（checkでauthorを自分に固定している）"""
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("このコマンドは管理者専用です。", ephemeral=True)
+        return
+    if not isinstance(interaction.channel, (discord.TextChannel, discord.Thread)):
+        await interaction.response.send_message(
+            "このコマンドはテキストチャンネルでのみ使えます。", ephemeral=True
+        )
+        return
+
+    limit = max(1, min(limit, 1000))
+    await interaction.response.defer(ephemeral=True)
+    try:
+        deleted = await interaction.channel.purge(
+            limit=limit,
+            check=lambda m: client.user is not None and m.author.id == client.user.id,
+        )
+    except discord.Forbidden:
+        await interaction.followup.send(
+            "「メッセージの管理」権限が足りず削除できませんでした。botのロール権限を確認してください。",
+            ephemeral=True,
+        )
+        return
+    except discord.HTTPException as e:
+        await interaction.followup.send(f"削除中にエラーが発生しました（{e}）", ephemeral=True)
+        return
+
+    await interaction.followup.send(
+        f"直近{limit}件を確認し、てちょうAIの投稿を{len(deleted)}件削除しました。\n"
+        "14日より古い投稿は1件ずつの削除になり時間がかかります。残っていればもう一度実行してください。",
+        ephemeral=True,
+    )
+
+
 @tree.command(name="lv1一括付与", description="レベルロールを持っていない全メンバーにLv1を付与します（管理者専用）")
 async def bulk_assign_lv1_command(interaction: discord.Interaction):
     if not interaction.user.guild_permissions.administrator:
