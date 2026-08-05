@@ -64,6 +64,13 @@
     ]
   },
 
+  "daily_report": {
+    "enabled": true,
+    "channel_id": 1534521912565301298,
+    "hour": 9,
+    "minute": 0
+  },
+
   "channel_reminder": {
     "enabled": true,
     "channel_ids": [1381042410947215440, 1323892469578072085, 1320621292415615026],

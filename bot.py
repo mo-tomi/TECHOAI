@@ -75,6 +75,9 @@ def cfg_welcome() -> dict:
 def cfg_daily_topic() -> dict:
     return config.get("daily_topic", {})
 
+def cfg_daily_report() -> dict:
+    return config.get("daily_report", {})
+
 def cfg_channel_reminder() -> dict:
     return config.get("channel_reminder", {})
 
@@ -358,6 +361,142 @@ async def daily_topic_loop():
                         print(f"  今日の話題投稿: {topic[:30]}")
                 except Exception as e:
                     print(f"今日の話題エラー: {e}")
+
+        await asyncio.sleep(60)
+
+
+# ============================================================
+# 機能5.3: 日次レポート（サーバー人数を毎日記録して前日比・7日前比を投稿）
+# ============================================================
+report_posted_today = False
+
+# Koyebはディスクが再デプロイで消えるため、履歴は投稿先チャンネルに残る過去レポートを正本とし、
+# 起動のたびにfooterの機械可読行を読み直してメモリ上に再構築する（level_backfillと同じ方式）
+# { "YYYY-MM-DD": {"total": 総人数, "humans": bot除く人数} }
+member_history: dict[str, dict] = {}
+
+# footerの機械可読行。書式が少しでも違う行は履歴として採用しない
+MEMBER_COUNT_RE = re.compile(r"^#membercount (\d{4}-\d{2}-\d{2}) total=(\d+) humans=(\d+)$")
+MEMBER_HISTORY_BACKFILL_LIMIT = 200  # backfillで読むメッセージ数の上限
+MEMBER_HISTORY_BACKFILL_DAYS = 30    # backfillでさかのぼる日数の上限
+
+
+def build_member_count_footer(date_str: str, total: int, humans: int) -> str:
+    """次回起動時のbackfillで読み戻すための機械可読行"""
+    return f"#membercount {date_str} total={total} humans={humans}"
+
+
+def build_daily_report_embed(now: datetime.datetime, total: int, humans: int) -> discord.Embed:
+    def diff_text(days: int) -> str:
+        past = member_history.get((now - datetime.timedelta(days=days)).strftime("%Y-%m-%d"))
+        if past is None:
+            return "データなし"
+        return f"{total - past['total']:+d}人"
+
+    embed = discord.Embed(
+        title=f"📊 日次レポート（{now.year}年{now.month}月{now.day}日）",
+        color=0x5865F2,
+    )
+    embed.add_field(name="現在の人数", value=f"{total}人（bot除く: {humans}人）", inline=False)
+    embed.add_field(name="前日比", value=diff_text(1), inline=False)
+    embed.add_field(name="7日前比", value=diff_text(7), inline=False)
+    embed.set_footer(text=build_member_count_footer(now.strftime("%Y-%m-%d"), total, humans))
+    return embed
+
+
+async def post_daily_report(channel):
+    """現在の人数を集計してレポートを投稿し、履歴にも記録する"""
+    guild = client.get_guild(GUILD_ID)
+    if guild is None:
+        print(f"日次レポート: サーバー {GUILD_ID} が見つかりません")
+        return None
+
+    now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=9)))  # JST
+    total = guild.member_count or 0
+    humans = sum(1 for member in guild.members if not member.bot)
+
+    embed = build_daily_report_embed(now, total, humans)  # 履歴へ入れる前に前日比を計算する
+    sent_msg = await channel.send(embed=embed)
+    member_history[now.strftime("%Y-%m-%d")] = {"total": total, "humans": humans}
+    print(f"  日次レポート投稿: {total}人（bot除く: {humans}人）")
+    return sent_msg
+
+
+async def daily_report_backfill():
+    """投稿先チャンネルの過去レポートを読み直して履歴を再構築する（起動時に毎回実行）"""
+    cfg = cfg_daily_report()
+    if not cfg.get("enabled", False) or not cfg.get("channel_id"):
+        print("日次レポート: 無効")
+        return
+
+    await client.wait_until_ready()
+    channel = client.get_channel(cfg.get("channel_id"))
+    if channel is None:
+        print(f"日次レポート: チャンネル {cfg.get('channel_id')} が見つかりません")
+        return
+
+    oldest = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=MEMBER_HISTORY_BACKFILL_DAYS)
+    loaded = 0
+    try:
+        # historyは新しい順。同じ日付が複数あっても先に見つかった＝より新しい投稿を採用する
+        async for msg in channel.history(limit=MEMBER_HISTORY_BACKFILL_LIMIT):
+            if msg.created_at < oldest:
+                break
+            if client.user is None or msg.author.id != client.user.id:
+                continue
+            for embed in msg.embeds:
+                text = (embed.footer.text or "").strip() if embed.footer else ""
+                if not text.startswith("#membercount"):
+                    continue
+                matched = MEMBER_COUNT_RE.match(text)
+                if not matched:
+                    print(f"日次レポート: footerを解釈できませんでした（メッセージ {msg.id}）: {text}")
+                    continue
+                date_str = matched.group(1)
+                if date_str in member_history:
+                    continue
+                member_history[date_str] = {
+                    "total": int(matched.group(2)),
+                    "humans": int(matched.group(3)),
+                }
+                loaded += 1
+    except Exception as e:
+        print(f"日次レポートbackfillエラー: {e}")
+
+    print(f"日次レポート: 過去レポートから{loaded}日分を読み込みました")
+
+
+async def daily_report_loop():
+    """毎分チェックして、指定時刻に日次レポートを投稿"""
+    global report_posted_today
+
+    await client.wait_until_ready()
+    print("日次レポート: 監視ループ開始")
+
+    while not client.is_closed():
+        cfg = cfg_daily_report()
+        enabled = cfg.get("enabled", False)
+        channel_id = cfg.get("channel_id")
+        hour = cfg.get("hour", 9)
+        minute = cfg.get("minute", 0)
+
+        if enabled and channel_id is not None:
+            now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=9)))  # JST
+
+            # 日付が変わったらリセット
+            if now.hour == 0 and now.minute == 0:
+                report_posted_today = False
+
+            # 投稿時刻チェック
+            if now.hour == hour and now.minute == minute and not report_posted_today:
+                report_posted_today = True
+
+                try:
+                    channel = client.get_channel(channel_id)
+                    if channel:
+                        await post_daily_report(channel)
+                except Exception as e:
+                    print(f"日次レポートエラー: {e}")
 
         await asyncio.sleep(60)
 
@@ -1399,6 +1538,8 @@ async def on_ready():
     print(f"  自己紹介リプライ: {'ON' if w.get('enabled', False) and w.get('watch_channel_id') else 'OFF'}")
     t = cfg_daily_topic()
     print(f"  今日の話題: {'ON' if t.get('enabled', False) and t.get('channel_id') else 'OFF'}")
+    dr = cfg_daily_report()
+    print(f"  日次レポート: {'ON' if dr.get('enabled', False) and dr.get('channel_id') else 'OFF'}")
     r = cfg_channel_reminder()
     print(f"  チャンネル表示リマインド: {'ON' if r.get('enabled', False) and r.get('channel_ids') else 'OFF'}")
     print(f"  共感リアクション: {'ON' if cfg_empathy().get('enabled', False) else 'OFF'}")
@@ -1424,6 +1565,8 @@ async def on_ready():
     if not background_tasks_started:  # on_readyは再接続時にも発火するため二重起動を防ぐ
         background_tasks_started = True
         client.loop.create_task(daily_topic_loop())
+        client.loop.create_task(daily_report_backfill())  # 履歴を復元してから比較できるよう、ループより先に流す
+        client.loop.create_task(daily_report_loop())
         client.loop.create_task(monthly_reminder_loop())
         client.loop.create_task(keepalive_loop())
         client.loop.create_task(ephemeral_sweep_loop())
@@ -1516,6 +1659,35 @@ async def manual_topic(interaction: discord.Interaction):
         )
     except Exception:
         pass
+
+
+@tree.command(name="daily_report", description="サーバー人数の日次レポートを今すぐ投稿する（管理者用）")
+async def daily_report_command(interaction: discord.Interaction):
+    if not interaction.user.guild_permissions.manage_guild:
+        await interaction.response.send_message(
+            "このコマンドはサーバー管理権限を持つ方のみ実行できます",
+            ephemeral=True
+        )
+        return
+
+    channel_id = cfg_daily_report().get("channel_id")
+    channel = client.get_channel(channel_id) if channel_id else None
+    if channel is None:
+        await interaction.response.send_message("日次レポートの投稿先チャンネルが見つかりません", ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=True)
+    try:
+        sent_msg = await post_daily_report(channel)
+    except Exception as e:
+        print(f"日次レポートエラー: {e}")
+        await interaction.followup.send(f"日次レポートの投稿に失敗しました: {e}", ephemeral=True)
+        return
+
+    if sent_msg is None:
+        await interaction.followup.send("サーバー情報を取得できませんでした", ephemeral=True)
+        return
+    await interaction.followup.send(f"日次レポートを {channel.mention} に投稿しました", ephemeral=True)
 
 
 @tree.command(name="channel_reminder", description="チャンネル表示設定の案内を今すぐ投稿する（管理者用）")
